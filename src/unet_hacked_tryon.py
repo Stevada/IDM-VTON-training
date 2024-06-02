@@ -37,7 +37,7 @@ from diffusers.models.embeddings import (
     ImageHintTimeEmbedding,
     ImageProjection,
     ImageTimeEmbedding,
-    PositionNet,
+    GLIGENTextBoundingboxProjection,
     TextImageProjection,
     TextImageTimeEmbedding,
     TextTimeEmbedding,
@@ -764,7 +764,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 positive_len = cross_attention_dim[0]
 
             feature_type = "text-only" if attention_type == "gated" else "text-image"
-            self.position_net = PositionNet(
+            self.position_net = GLIGENTextBoundingboxProjection(
                 positive_len=positive_len, out_dim=cross_attention_dim, feature_type=feature_type
             )
 
@@ -816,7 +816,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         return processors
 
     def set_attn_processor(
-        self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]], _remove_lora=False
+        self, processor: Union[AttentionProcessor, Dict[str, AttentionProcessor]]
     ):
         r"""
         Sets the attention processor to use to compute attention.
@@ -841,9 +841,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         def fn_recursive_attn_processor(name: str, module: torch.nn.Module, processor):
             if hasattr(module, "set_processor"):
                 if not isinstance(processor, dict):
-                    module.set_processor(processor, _remove_lora=_remove_lora)
+                    module.set_processor(processor)
                 else:
-                    module.set_processor(processor.pop(f"{name}.processor"), _remove_lora=_remove_lora)
+                    module.set_processor(processor.pop(f"{name}.processor"))
 
             for sub_name, child in module.named_children():
                 fn_recursive_attn_processor(f"{name}.{sub_name}", child, processor)
@@ -864,7 +864,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 f"Cannot call `set_default_attn_processor` when attention processors are of type {next(iter(self.attn_processors.values()))}"
             )
 
-        self.set_attn_processor(processor, _remove_lora=True)
+        self.set_attn_processor(processor)
 
     def set_attention_slice(self, slice_size):
         r"""
