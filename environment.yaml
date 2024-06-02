@@ -1,32 +1,30 @@
-name: idm
+name: groot
 channels:
   - pytorch
-  - nvidia
   - defaults
 dependencies:
-  - python=3.10.0=h12debd9_5
-  - pytorch=2.0.1=py3.10_cuda11.8_cudnn8.7.0_0
-  - pytorch-cuda=11.8=h7e8668a_5
-  - torchaudio=2.0.2=py310_cu118
-  - torchtriton=2.0.0=py310
-  - torchvision=0.15.2=py310_cu118
-  - pip=23.3.1=py310h06a4308_0
-
+  - python==3.10
+  # - cudatoolkit=12.1
+  - pytorch==2.0.1 
+  - torchvision==0.15.2 
   - pip:
-      - accelerate==0.25.0
-      - torchmetrics==1.2.1
-      - tqdm==4.66.1
-      - transformers==4.36.2
-      - diffusers==0.25.0
-      - einops==0.7.0
-      - bitsandbytes==0.39.0
-      - scipy==1.11.1
-      - opencv-python
-      - gradio==4.24.0
-      - fvcore
-      - cloudpickle
-      - omegaconf
-      - pycocotools
-      - basicsr
-      - av
-      - onnxruntime==1.16.2
+    - scipy==1.10.1 
+    - scikit-image==0.21.0 
+    - opencv-python==4.7.0.72 
+    - pillow==9.4.0 
+    - diffusers==0.26.3
+    - transformers==4.36.2 
+    - accelerate==0.26.1 
+    - matplotlib==3.7.4 
+    - tqdm==4.64.1 
+    - gradio==4.16.0 
+    - config==0.5.1 
+    - einops==0.7.0 
+    - ninja==1.10.2
+    - huggingface_hub
+    - basicsr 
+    - datasets 
+    - xformers 
+    - bitsandbytes 
+    - wandb
+    - torchmetrics[image]

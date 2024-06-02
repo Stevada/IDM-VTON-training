@@ -740,7 +740,6 @@ def main(args):
     # )
     # print("Tryon",unet)
     # print("Compare", unet_com)
-    # os._exit(os.EX_OK)
     ################################DEBUG############################################
     
     ref_unet = UNet2DConditionModel_ref.from_pretrained(
@@ -748,6 +747,7 @@ def main(args):
         subfolder="unet",
         torch_dtype=torch.float16,
     )
+    # 
 
     # Freeze vae and text encoders.
     vae.requires_grad_(False)
@@ -757,6 +757,7 @@ def main(args):
     # Set unet as trainable.
     unet.train()
 
+    os._exit(os.EX_OK)
     # For mixed precision training we cast all non-trainable weights to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
