@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Fine-tuning script for Stable Diffusion XL for text2image."""
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
 
 import argparse
 import functools
@@ -44,7 +45,7 @@ from packaging import version
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, PretrainedConfig
+from transformers import AutoTokenizer, PretrainedConfig, CLIPImageProcessor, CLIPVisionModelWithProjection
 
 import diffusers
 from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
@@ -56,6 +57,9 @@ from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_ava
 from diffusers.utils.torch_utils import is_compiled_module
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
 from src.unet_hacked_tryon import UNet2DConditionModel as UNet2DConditionModel_tryon
+from cp_dataset import CPDatasetV2 as CPDataset
+
+from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
 
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
@@ -134,7 +138,162 @@ def import_model_class_from_model_name_or_path(
     else:
         raise ValueError(f"{model_class} is not supported.")
 
+def log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dataloader = None, is_final_validation=False, is_developing_validation=False):
+    logger.info("Running validation... ")
+    if is_developing_validation and args.original_model_name_or_path is not None:
+        pipeline = TryonPipeline.from_pretrained(
+            args.original_model_name_or_path,
+            vae=freeze.vae,
+            revision=args.revision,
+            variant=args.variant,
+            torch_dtype=weight_dtype,
+        )
+    elif not is_final_validation:
+        unet = accelerator.unwrap_model(unet)
+        pipeline = TryonPipeline.from_pretrained(
+                args.pretrained_model_name_or_path,
+                unet=unet,
+                vae=vae,
+                feature_extractor= CLIPImageProcessor(),
+                text_encoder = freeze.text_encoder_one,
+                text_encoder_2 = freeze.text_encoder_two,
+                tokenizer = freeze.tokenizer_one,
+                tokenizer_2 = freeze.tokenizer_two,
+                scheduler = freeze.noise_scheduler,
+                image_encoder=freeze.image_encoder,
+                torch_dtype=torch.float16,
+        ).to(accelerator.device)
+        pipeline.unet_encoder = freeze.ref_unet
+    else:
+        if args.pretrained_vae_model_name_or_path is not None:
+            vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype)
+        else:
+            vae = AutoencoderKL.from_pretrained(
+                args.pretrained_model_name_or_path, subfolder="vae", torch_dtype=weight_dtype
+            )
 
+        pipeline = TryonPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            vae=vae,
+            revision=args.revision,
+            variant=args.variant,
+            torch_dtype=weight_dtype,
+        )
+
+    pipeline = pipeline.to(accelerator.device)
+    pipeline.set_progress_bar_config(disable=True)
+
+    if args.enable_xformers_memory_efficient_attention:
+        pipeline.enable_xformers_memory_efficient_attention()
+
+
+    def sample_imgs(data_loader, log_key: str):
+        image_logs = []
+        with torch.no_grad():
+            for _, batch in enumerate(data_loader):
+                with torch.autocast("cuda"):
+                    img_emb_list = []
+                    for i in range(batch['cloth'].shape[0]):  # signed off
+                        img_emb_list.append(batch['cloth'][i])
+                    
+                    prompt = batch["caption"]  # signed off
+
+                    num_prompts = batch['cloth'].shape[0]                                        
+                    negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+
+                    if not isinstance(prompt, List):
+                        prompt = [prompt] * num_prompts
+                    if not isinstance(negative_prompt, List):
+                        negative_prompt = [negative_prompt] * num_prompts
+
+                    image_embeds = torch.cat(img_emb_list,dim=0)
+
+                    with torch.inference_mode():
+                        (
+                            prompt_embeds,
+                            negative_prompt_embeds,
+                            pooled_prompt_embeds,
+                            negative_pooled_prompt_embeds,
+                        ) = pipeline.encode_prompt(
+                            prompt,
+                            num_images_per_prompt=1,
+                            do_classifier_free_guidance=True,
+                            negative_prompt=negative_prompt,
+                        )
+                    
+                    
+                        prompt = batch["caption_cloth"]   #signed off
+                        negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+
+                        if not isinstance(prompt, List):
+                            prompt = [prompt] * num_prompts
+                        if not isinstance(negative_prompt, List):
+                            negative_prompt = [negative_prompt] * num_prompts
+
+
+                        with torch.inference_mode():
+                            (
+                                prompt_embeds_c,
+                                _,
+                                _,
+                                _,
+                            ) = pipeline.encode_prompt(
+                                prompt,
+                                num_images_per_prompt=1,
+                                do_classifier_free_guidance=False,
+                                negative_prompt=negative_prompt,
+                            )
+
+                        generator = torch.Generator(pipeline.device).manual_seed(args.seed) if args.seed is not None else None
+                        images = pipeline(
+                            prompt_embeds=prompt_embeds,
+                            negative_prompt_embeds=negative_prompt_embeds,
+                            pooled_prompt_embeds=pooled_prompt_embeds,
+                            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                            num_inference_steps=args.num_inference_steps,
+                            generator=generator,
+                            strength = 1.0,
+                            pose_img = batch['pose_img'],  # signed off densepose [-1,1]
+                            text_embeds_cloth=prompt_embeds_c,
+                            cloth = batch["ref_imgs"].to(accelerator.device),  # signed off
+                            mask_image=batch['inpaint_mask'], 
+                            image=(batch['GT']+1.0)/2.0, 
+                            height=args.height,
+                            width=args.width,
+                            guidance_scale=args.guidance_scale,
+                            ip_adapter_image = image_embeds,
+                        )[0]
+                        
+                        image_logs.append({
+                            "garment": batch["ref_imgs"], 
+                            "model": batch['GT'], 
+                            "orig_img": batch['GT'], 
+                            "samples": images, 
+                            "prompt": prompt,
+                            "inpaint mask": batch['inpaint_mask'],
+                            "pose_img": batch['pose_img'],
+                            })
+                
+        for tracker in accelerator.trackers:
+            if tracker.name == "wandb":
+                if not is_wandb_available():
+                    raise ImportError("Make sure to install wandb if you want to use it for logging during validation.")
+                import wandb
+                formatted_images = []
+                for log in image_logs:
+                    formatted_images.append(wandb.Image(log["garment"], caption="garment images"))
+                    formatted_images.append(wandb.Image(log["model"], caption="masked model images"))
+                    formatted_images.append(wandb.Image(log["orig_img"], caption="original images"))
+                    formatted_images.append(wandb.Image(log["inpaint mask"], caption="inpaint mask"))
+                    formatted_images.append(wandb.Image(log["pose_img"], caption="pose_img"))
+                    formatted_images.append(wandb.Image(log["samples"], caption=log["prompt"]))
+                tracker.log({log_key: formatted_images})
+            else:
+                logger.warn(f"image logging not implemented for {tracker.name}")
+                
+    if validation_dataloader is not None:
+        sample_imgs(validation_dataloader, "validation_images")
+    
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
@@ -149,6 +308,18 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help="Path to pretrained VAE model with better numerical stability. More details: https://github.com/huggingface/diffusers/pull/4038.",
+    )
+    parser.add_argument(
+        "--original_model_name_or_path",
+        type=str,
+        default=None,
+        help="Path to pretrained Original model.",
+    )
+    parser.add_argument(
+        "--image_encoder_path",
+        type=str,
+        default=None,
+        help="Path to pretrained VIT model.",
     )
     parser.add_argument(
         "--pretrained_garment_model_name_or_path",
@@ -478,7 +649,24 @@ def parse_args(input_args=None):
         "--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers."
     )
     parser.add_argument("--noise_offset", type=float, default=0, help="The scale of noise offset.")
+    parser.add_argument(
+        "--dataroot",
+        type=str,
+        help=(
+            'The dataset dir'
+        ),
+    )
+    parser.add_argument(
+        "--train_data_list",
+        type=str,
+        default=None,
+    )
 
+    parser.add_argument(
+        "--validation_data_list",
+        type=str,
+        default=None,
+    )
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -728,11 +916,45 @@ def main(args):
         variant=args.variant,
     )
     
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        args.image_encoder_path,
+        torch_dtype=torch.float16,
+    )
+    
     unet = UNet2DConditionModel_tryon.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant, low_cpu_mem_usage=False
     )
     
     load_model_with_zeroed_mismatched_keys(unet, "./diffusion_pytorch_model.safetensors")
+    def replace_first_conv_layer(unet_model, new_in_channels):
+        # Access the first convolutional layer
+        # This example assumes the first conv layer is directly an attribute of the model
+        # Adjust the attribute access based on your model's structure
+        original_first_conv = unet_model.conv_in
+        
+        # Create a new Conv2d layer with the desired number of input channels
+        # and the same parameters as the original layer
+        new_first_conv = torch.nn.Conv2d(
+            in_channels=new_in_channels,
+            out_channels=original_first_conv.out_channels,
+            kernel_size=original_first_conv.kernel_size,
+            padding=1,
+        )
+        
+        # Zero-initialize the weights of the new convolutional layer
+        new_first_conv.weight.data.zero_()
+
+        # Copy the bias from the original convolutional layer to the new layer
+        new_first_conv.bias.data = original_first_conv.bias.data.clone()
+        
+        new_first_conv.weight.data[:, :original_first_conv.in_channels] = original_first_conv.weight.data
+        
+        # Replace the original first conv layer with the new one
+        return new_first_conv
+
+    new_in_channel = 13
+    unet.conv_in = replace_first_conv_layer(unet, new_in_channel)  #replace the conv in layer from 4 to 8 to make sd15 match with new input dims
+    unet.config['in_channels'] = new_in_channel
     
     ################################DEBUG############################################
     # unet_com = UNet2DConditionModel.from_pretrained(
@@ -757,7 +979,7 @@ def main(args):
     # Set unet as trainable.
     unet.train()
 
-    os._exit(os.EX_OK)
+    # os._exit(os.EX_OK)
     # For mixed precision training we cast all non-trainable weights to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     weight_dtype = torch.float32
@@ -869,95 +1091,21 @@ def main(args):
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
     )
+    
+    # os._exit(os.EX_OK)
 
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            args.dataset_name,
-            args.dataset_config_name,
-            cache_dir=args.cache_dir,
-        )
-    else:
-        data_files = {}
-        if args.train_data_dir is not None:
-            data_files["train"] = os.path.join(args.train_data_dir, "**")
-        dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-            cache_dir=args.cache_dir,
-        )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.4.0/en/image_load#imagefolder
-
-    # Preprocessing the datasets.
-    # We need to tokenize inputs and targets.
-    column_names = dataset["train"].column_names
-
-    # 6. Get the column names for input/target.
-    dataset_columns = DATASET_NAME_MAPPING.get(args.dataset_name, None)
-    if args.image_column is None:
-        image_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        image_column = args.image_column
-        if image_column not in column_names:
-            raise ValueError(
-                f"--image_column' value '{args.image_column}' needs to be one of: {', '.join(column_names)}"
-            )
-    if args.caption_column is None:
-        caption_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        caption_column = args.caption_column
-        if caption_column not in column_names:
-            raise ValueError(
-                f"--caption_column' value '{args.caption_column}' needs to be one of: {', '.join(column_names)}"
-            )
-
-    # Preprocessing the datasets.
-    train_resize = transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR)
-    train_crop = transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution)
-    train_flip = transforms.RandomHorizontalFlip(p=1.0)
-    train_transforms = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
-
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[image_column]]
-        # image aug
-        original_sizes = []
-        all_images = []
-        crop_top_lefts = []
-        for image in images:
-            original_sizes.append((image.height, image.width))
-            image = train_resize(image)
-            if args.random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
-            crop_top_left = (y1, x1)
-            crop_top_lefts.append(crop_top_left)
-            image = train_transforms(image)
-            all_images.append(image)
-
-        examples["original_sizes"] = original_sizes
-        examples["crop_top_lefts"] = crop_top_lefts
-        examples["pixel_values"] = all_images
-        return examples
-
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
-
+    if args.dataroot is None:
+        assert "Please provide correct data root"
+    train_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.train_data_list)
+    validation_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.validation_data_list)
+    
+    # os._exit(os.EX_OK)
+    
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory. We will pre-compute the VAE encodings too.
     text_encoders = [text_encoder_one, text_encoder_two]
@@ -970,52 +1118,21 @@ def main(args):
         caption_column=args.caption_column,
     )
     compute_vae_encodings_fn = functools.partial(compute_vae_encodings, vae=vae)
-    with accelerator.main_process_first():
-        from datasets.fingerprint import Hasher
-
-        # fingerprint used by the cache for the other processes to load the result
-        # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
-        new_fingerprint = Hasher.hash(args)
-        new_fingerprint_for_vae = Hasher.hash(vae_path)
-        train_dataset_with_embeddings = train_dataset.map(
-            compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint
-        )
-        train_dataset_with_vae = train_dataset.map(
-            compute_vae_encodings_fn,
-            batched=True,
-            batch_size=args.train_batch_size,
-            new_fingerprint=new_fingerprint_for_vae,
-        )
-        precomputed_dataset = concatenate_datasets(
-            [train_dataset_with_embeddings, train_dataset_with_vae.remove_columns(["image", "text"])], axis=1
-        )
-        precomputed_dataset = precomputed_dataset.with_transform(preprocess_train)
-
-    del compute_vae_encodings_fn, compute_embeddings_fn, text_encoder_one, text_encoder_two
-    del text_encoders, tokenizers, vae
+    # del compute_vae_encodings_fn, compute_embeddings_fn, text_encoder_one, text_encoder_two
+    # del text_encoders, tokenizers, vae
     gc.collect()
     torch.cuda.empty_cache()
 
-    def collate_fn(examples):
-        model_input = torch.stack([torch.tensor(example["model_input"]) for example in examples])
-        original_sizes = [example["original_sizes"] for example in examples]
-        crop_top_lefts = [example["crop_top_lefts"] for example in examples]
-        prompt_embeds = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
-        pooled_prompt_embeds = torch.stack([torch.tensor(example["pooled_prompt_embeds"]) for example in examples])
-
-        return {
-            "model_input": model_input,
-            "prompt_embeds": prompt_embeds,
-            "pooled_prompt_embeds": pooled_prompt_embeds,
-            "original_sizes": original_sizes,
-            "crop_top_lefts": crop_top_lefts,
-        }
-
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
-        precomputed_dataset,
+        train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
+        batch_size=args.train_batch_size,
+        num_workers=args.dataloader_num_workers,
+    )
+    validation_dataloader = torch.utils.data.DataLoader(
+        validation_dataset,
+        shuffle=True,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
@@ -1035,8 +1152,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader, lr_scheduler
+    unet, ref_unet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        unet, ref_unet, optimizer, train_dataloader, lr_scheduler
     )
 
     if args.use_ema:
@@ -1065,11 +1182,30 @@ def main(args):
     else:
         autocast_ctx = torch.autocast(accelerator.device.type)
 
+    # put untrain modules into freeze
+    freeze = {
+        "vae": vae,
+        "text_encoder_one": text_encoder_one,
+        "text_encoder_two": text_encoder_two,
+        "tokenizer_one": tokenizer_one,
+        "tokenizer_two": tokenizer_two,
+        "noise_scheduler": noise_scheduler,
+        "image_encoder": image_encoder,
+        "ref_unet": ref_unet,
+    }
+    # developing log
+    log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dataloader, False, True)
+    
+    os._exit(os.EX_OK)
+    
+    # pretrain log
+    log_validation()
+    
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(precomputed_dataset)}")
+    logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
