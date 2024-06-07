@@ -1713,13 +1713,14 @@ class StableDiffusionXLInpaintPipeline(
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
         add_time_ids = add_time_ids.to(device)
-
+        
         if ip_adapter_image is not None:
             image_embeds = self.prepare_ip_adapter_image_embeds(
                 ip_adapter_image, device, batch_size * num_images_per_prompt
             )
 
             #project outside for loop
+            # print(f"self.unet {self.unet}")
             image_embeds = self.unet.encoder_hid_proj(image_embeds).to(prompt_embeds.dtype)
 
 
@@ -1771,7 +1772,10 @@ class StableDiffusionXLInpaintPipeline(
 
                 # bsz = mask.shape[0]
                 if num_channels_unet == 13:
+                    # print(f"{latent_model_input.shape}, {mask.shape}, {masked_image_latents.shape}, {pose_img.shape} ")
                     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents,pose_img], dim=1)
+                    # import os
+                    # os._exit(os.EX_OK)
 
                 # if num_channels_unet == 9:
                 #     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)

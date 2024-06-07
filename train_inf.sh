@@ -3,7 +3,7 @@ export VAE_NAME="madebyollin/sdxl-vae-fp16-fix"
 export DATASET_NAME="lambdalabs/naruto-blip-captions"
 export GARMENT_NAME="stabilityai/stable-diffusion-xl-base-1.0"
 
-accelerate launch train.py \
+accelerate launch train_inf.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
   --pretrained_garment_model_name_or_path=$GARMENT_NAME \
   --pretrained_vae_model_name_or_path=$VAE_NAME \
@@ -25,7 +25,9 @@ accelerate launch train.py \
   --train_data_list="subtrain_1.txt" \
   --validation_data_list="subtrain_1.txt" \
   --original_model_name_or_path="./checkpoints/IDM-VTON"  \
-  --image_encoder_path="./checkpoints/image_encoder"  \
-  --width=512   \
-  --height=512  \
+  --width 768 --height 1024  \
+  --tracker_project_name="train_controlnet" \
+  --tracker_entity="anzhangusc" \
+  --pretrained_nonfreeze_model_name_or_path="./checkpoints/stable-diffusion-xl-1.0-inpainting-0.1"  \
+  # --image_encoder_path="./checkpoints/image_encoder"  \
   # --enable_xformers_memory_efficient_attention \
