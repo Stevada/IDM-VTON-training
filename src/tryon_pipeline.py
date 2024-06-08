@@ -1796,7 +1796,7 @@ class StableDiffusionXLInpaintPipeline(
                 if self.do_classifier_free_guidance:
                     reference_features = [torch.cat([torch.zeros_like(d), d]) for d in reference_features]
 
-
+                # print(f"{latent_model_input.shape}")
                 noise_pred = self.unet(
                     latent_model_input,
                     t,

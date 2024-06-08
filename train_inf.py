@@ -543,6 +543,7 @@ def main(args):
     new_in_channel = 13
     unet.conv_in = replace_first_conv_layer(unet, new_in_channel)  #replace the conv in layer from 4 to 8 to make sd15 match with new input dims
     unet.config['in_channels'] = new_in_channel
+    unet.config.in_channels = new_in_channel
     
     ################################DEBUG############################################
     # unet_com = UNet2DConditionModel.from_pretrained(
@@ -774,6 +775,7 @@ def main(args):
     # put untrain modules into freeze
 
     # developing log
+    # print(f"the in channel number: {unet.config.in_channels}")
     log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", test_dataloader)
     
     os._exit(os.EX_OK)
