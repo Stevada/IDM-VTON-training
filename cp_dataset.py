@@ -520,8 +520,8 @@ class CPDatasetV2(CPDataset):
         result = {
             "GT": im,
             # "inpaint_image": inpaint_warp_cloth,
-            # "inpaint_image": im * inpaint_mask,
-            "inpaint_image": agnostic,
+            "inpaint_image": im * inpaint_mask,
+            # "inpaint_image": agnostic,
             "inpaint_mask": 1-inpaint_mask,
             "mask": mask,
             "ref_imgs": ref_image,
@@ -531,6 +531,8 @@ class CPDatasetV2(CPDataset):
             "caption": "model is wearing a " + caption_string,
             "pose_img": dp_im,
             "cloth": self.clip_processor(images=im_pil, return_tensors="pt").pixel_values,
+            "cloth_pure": ref_image,
+            "image": im,
         }
         return result
 
@@ -589,6 +591,7 @@ class VitonHDTestDataset(data.Dataset):
         phase: Literal["train", "test"],
         order: Literal["paired", "unpaired"] = "paired",
         size: Tuple[int, int] = (512, 384),
+        data_list: Optional[str] = None,
     ):
         super(VitonHDTestDataset, self).__init__()
         self.dataroot = dataroot_path
@@ -612,10 +615,7 @@ class VitonHDTestDataset(data.Dataset):
         dataroot_names = []
 
 
-        if phase == "train":
-            filename = os.path.join(dataroot_path, f"{phase}_pairs1.txt")
-        else:
-            filename = os.path.join(dataroot_path, f"{phase}_pairs1.txt")
+        filename = os.path.join(dataroot_path, data_list)
 
         with open(filename, "r") as f:
             for line in f.readlines():
@@ -642,7 +642,7 @@ class VitonHDTestDataset(data.Dataset):
         im_name = self.im_names[index]
         
         # load captions
-        caption_name = osp.join(self.dataroot, "cloth", c_name).replace("cloth", "cloth_caption").replace(".jpg", ".txt")
+        caption_name = osp.join(self.dataroot, self.phase, "cloth", c_name).replace("cloth", "cloth_caption").replace(".jpg", ".txt")
         # Check if the file exists
         if os.path.exists(caption_name):
             with open(caption_name, 'r') as file:

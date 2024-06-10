@@ -1,7 +1,8 @@
 import torch
 
 from diffusers import AutoencoderKL, DDPMScheduler
-from transformers import AutoTokenizer, CLIPVisionModelWithProjection,CLIPTextModelWithProjection, CLIPTextModel
+from diffusers.image_processor import VaeImageProcessor
+from transformers import AutoTokenizer, CLIPVisionModelWithProjection,CLIPTextModelWithProjection, CLIPTextModel, CLIPImageProcessor
 
 from src.unet_hacked_tryon import UNet2DConditionModel
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
@@ -52,6 +53,13 @@ class ModelContainer:
             revision=None,
             use_fast=False,
         )
+        
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        self.mask_processor = VaeImageProcessor(
+            vae_scale_factor=self.vae_scale_factor, do_normalize=False, do_binarize=True, do_convert_grayscale=True
+        )
+        self.feature_extractor = CLIPImageProcessor()
 
     def replace_first_conv_layer(unet_model, new_in_channels):
         # Access the first convolutional layer

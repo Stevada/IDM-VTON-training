@@ -456,20 +456,31 @@ class StableDiffusionXLInpaintPipeline(
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_image
     def encode_image(self, image, device, num_images_per_prompt, output_hidden_states=None):
         dtype = next(self.image_encoder.parameters()).dtype
-        # print(image.shape)
         if not isinstance(image, torch.Tensor):
             image = self.feature_extractor(image, return_tensors="pt").pixel_values
 
         image = image.to(device=device, dtype=dtype)
+        print(f"encode image (initial): {image.dtype}")
+
         if output_hidden_states:
             image_enc_hidden_states = self.image_encoder(image, output_hidden_states=True).hidden_states[-2]
+            print(f"encode image (after encoding): {image_enc_hidden_states.dtype}")
+            
             image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
+            print(f"encode image (after repeat_interleave): {image_enc_hidden_states.dtype}")
+            
             uncond_image_enc_hidden_states = self.image_encoder(
                 torch.zeros_like(image), output_hidden_states=True
             ).hidden_states[-2]
+            print(f"encode image (uncond encoding): {uncond_image_enc_hidden_states.dtype}")
+            
             uncond_image_enc_hidden_states = uncond_image_enc_hidden_states.repeat_interleave(
                 num_images_per_prompt, dim=0
             )
+            print(f"encode image (uncond after repeat_interleave): {uncond_image_enc_hidden_states.dtype}")
+
+            print(f"encode image (final): {image_enc_hidden_states.dtype}")
+
             return image_enc_hidden_states, uncond_image_enc_hidden_states
         else:
             image_embeds = self.image_encoder(image).image_embeds
@@ -488,10 +499,12 @@ class StableDiffusionXLInpaintPipeline(
         #         f"`ip_adapter_image` must have same length as the number of IP Adapters. Got {len(ip_adapter_image)} images and {len(self.unet.encoder_hid_proj.image_projection_layers)} IP Adapters."
         #     )
         output_hidden_state = not isinstance(self.unet.encoder_hid_proj, ImageProjection)
-        # print(output_hidden_state)
+        # print(f"output_hidden_state: {output_hidden_state}")
+        print(f"DEBUG; encode image: {ip_adapter_image.dtype}")
         image_embeds, negative_image_embeds = self.encode_image(
             ip_adapter_image, device, 1, output_hidden_state
         )
+        print(f"DEBUG; encode image: {image_embeds.dtype}")
         # print(single_image_embeds.shape)
         # single_image_embeds = torch.stack([single_image_embeds] * num_images_per_prompt, dim=0)
         # single_negative_image_embeds = torch.stack([single_negative_image_embeds] * num_images_per_prompt, dim=0)
@@ -1713,14 +1726,14 @@ class StableDiffusionXLInpaintPipeline(
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
         add_time_ids = add_time_ids.to(device)
-        
+        print(f"prompt_embeds shape: {prompt_embeds.shape}, {prompt_embeds.dtype}")
         if ip_adapter_image is not None:
             image_embeds = self.prepare_ip_adapter_image_embeds(
                 ip_adapter_image, device, batch_size * num_images_per_prompt
             )
 
             #project outside for loop
-            # print(f"self.unet {self.unet}")
+            print(f"image_embeds type: {image_embeds.dtype}")
             image_embeds = self.unet.encoder_hid_proj(image_embeds).to(prompt_embeds.dtype)
 
 
@@ -1767,6 +1780,7 @@ class StableDiffusionXLInpaintPipeline(
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
 
                 # concat latents, mask, masked_image_latents in the channel dimension
+                # The function scale_model_input should not be used during the training process of diffusion models. 
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
 
@@ -1784,6 +1798,8 @@ class StableDiffusionXLInpaintPipeline(
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
                 if ip_adapter_image is not None:
                     added_cond_kwargs["image_embeds"] = image_embeds
+                    print(f"image_embeds shape: {image_embeds.shape}")
+
                 # down,reference_features = self.UNet_Encoder(cloth,t, text_embeds_cloth,added_cond_kwargs= {"text_embeds": pooled_prompt_embeds_c, "time_ids": add_time_ids},return_dict=False)
                 down,reference_features = self.unet_encoder(cloth,t, text_embeds_cloth,return_dict=False)
                 # print(type(reference_features))

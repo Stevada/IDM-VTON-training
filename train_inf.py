@@ -54,7 +54,8 @@ from diffusers.training_utils import EMAModel, compute_snr
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_available
-from diffusers.utils.torch_utils import is_compiled_module
+from diffusers.utils.torch_utils import is_compiled_module, randn_tensor
+from diffusers.models import ImageProjection
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
 from src.unet_hacked_tryon import UNet2DConditionModel as UNet2DConditionModel_tryon
 from cp_dataset import CPDatasetV2 as CPDataset, VitonHDTestDataset
@@ -157,6 +158,19 @@ def check_model_components(model):
     else:
         print("All required model components are present.")
 
+def check_sample_elements(sample):
+    required_keys = [
+        'cloth', 'caption', 'caption_cloth', 'pose_img', 
+        'cloth_pure', 'inpaint_mask', 'image'
+    ]
+    
+    missing_keys = [key for key in required_keys if key not in sample]
+    
+    if missing_keys:
+        raise ValueError(f"Missing keys in sample: {missing_keys}")
+    else:
+        print("All required keys are present in the sample.")
+
 def log_validation(unet, model, args, accelerator, weight_dtype, log_name, validation_dataloader):
     
     unet = accelerator.unwrap_model(unet)
@@ -182,6 +196,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
         with torch.no_grad():
             image_logs = []
             for sample in validation_dataloader:
+                check_sample_elements(sample)
                 img_emb_list = []
                 for i in range(sample['cloth'].shape[0]):
                     img_emb_list.append(sample['cloth'][i])
@@ -287,9 +302,8 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                     logger.warn(f"image logging not implemented for {tracker.name}")            
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
-def encode_prompt(batch, text_encoders, tokenizers, proportion_empty_prompts, caption_column, is_train=True):
+def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train=True):
     prompt_embeds_list = []
-    prompt_batch = batch[caption_column]
 
     captions = []
     for caption in prompt_batch:
@@ -326,19 +340,53 @@ def encode_prompt(batch, text_encoders, tokenizers, proportion_empty_prompts, ca
 
     prompt_embeds = torch.concat(prompt_embeds_list, dim=-1)
     pooled_prompt_embeds = pooled_prompt_embeds.view(bs_embed, -1)
-    return {"prompt_embeds": prompt_embeds.cpu(), "pooled_prompt_embeds": pooled_prompt_embeds.cpu()}
+    return prompt_embeds, pooled_prompt_embeds
+
+def encode_image(model, image, device, num_images_per_prompt, output_hidden_states=None):
+    dtype = next(model.image_encoder.parameters()).dtype
+    if not isinstance(image, torch.Tensor):
+        image = model.feature_extractor(image, return_tensors="pt").pixel_values
+
+    image = image.to(device=device, dtype=dtype)
+    print(f"encode image (initial): {image.dtype}")
+    if output_hidden_states:
+        image_enc_hidden_states = model.image_encoder(image, output_hidden_states=True).hidden_states[-2]
+        print(f"encode image (after encoding): {image_enc_hidden_states.dtype}")
+        
+        image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
+        print(f"encode image (after repeat_interleave): {image_enc_hidden_states.dtype}")
+        
+        uncond_image_enc_hidden_states = model.image_encoder(
+            torch.zeros_like(image), output_hidden_states=True
+        ).hidden_states[-2]
+        print(f"encode image (uncond encoding): {uncond_image_enc_hidden_states.dtype}")
+        
+        uncond_image_enc_hidden_states = uncond_image_enc_hidden_states.repeat_interleave(
+            num_images_per_prompt, dim=0
+        )
+        print(f"encode image (uncond after repeat_interleave): {uncond_image_enc_hidden_states.dtype}")
+
+        print(f"encode image (final): {image_enc_hidden_states.dtype}")
 
 
-def compute_vae_encodings(batch, vae):
-    images = batch.pop("pixel_values")
-    pixel_values = torch.stack(list(images))
+        return image_enc_hidden_states, uncond_image_enc_hidden_states
+    else:
+        image_embeds = model.image_encoder(image).image_embeds
+        image_embeds = image_embeds.repeat_interleave(num_images_per_prompt, dim=0)
+        uncond_image_embeds = torch.zeros_like(image_embeds)
+
+        return image_embeds, uncond_image_embeds
+
+
+def compute_vae_encodings(pixel_values, vae):
+    
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
     pixel_values = pixel_values.to(vae.device, dtype=vae.dtype)
 
     with torch.no_grad():
         model_input = vae.encode(pixel_values).latent_dist.sample()
     model_input = model_input * vae.config.scaling_factor
-    return {"model_input": model_input.cpu()}
+    return model_input
 
 
 def generate_timestep_weights(args, num_timesteps):
@@ -416,6 +464,107 @@ def load_model_with_zeroed_mismatched_keys(unet, pretrained_weights_path):
     # Load the new state dict into the model
     unet.load_state_dict(new_state_dict)
 
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
+def retrieve_latents(
+    encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
+):
+    if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        return encoder_output.latent_dist.sample(generator)
+    elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+        return encoder_output.latent_dist.mode()
+    elif hasattr(encoder_output, "latents"):
+        return encoder_output.latents
+    else:
+        raise AttributeError("Could not access latents of provided encoder_output")
+
+def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator):
+    dtype = image.dtype
+    if self.vae.config.force_upcast:
+        image = image.float()
+        self.vae.to(dtype=torch.float32)
+
+    if isinstance(generator, list):
+        image_latents = [
+            retrieve_latents(self.vae.encode(image[i : i + 1]), generator=generator[i])
+            for i in range(image.shape[0])
+        ]
+        image_latents = torch.cat(image_latents, dim=0)
+    else:
+        image_latents = retrieve_latents(self.vae.encode(image), generator=generator)
+
+    if self.vae.config.force_upcast:
+        self.vae.to(dtype)
+
+    image_latents = image_latents.to(dtype)
+    image_latents = self.vae.config.scaling_factor * image_latents
+
+    return image_latents
+
+
+
+def prepare_latents(
+    model,
+    batch_size,
+    num_channels_latents,
+    height,
+    width,
+    dtype,
+    device,
+    generator,
+    latents=None,
+    image=None,
+    timestep=None,
+    is_strength_max=True,
+    add_noise=True,
+    return_noise=False,
+    return_image_latents=False,
+):
+    shape = (batch_size, num_channels_latents, height // model.vae_scale_factor, width // model.vae_scale_factor)
+    if isinstance(generator, list) and len(generator) != batch_size:
+        raise ValueError(
+            f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+            f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+        )
+
+    if (image is None or timestep is None) and not is_strength_max:
+        raise ValueError(
+            "Since strength < 1. initial latents are to be initialised as a combination of Image + Noise."
+            "However, either the image or the noise timestep has not been provided."
+        )
+
+    if image.shape[1] == 4:
+        image_latents = image.to(device=device, dtype=dtype)
+        image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
+    elif return_image_latents or (latents is None and not is_strength_max):
+        image = image.to(device=device, dtype=dtype)
+        image_latents = _encode_vae_image(image=image, generator=generator)
+        image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
+
+    if latents is None and add_noise:
+        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        # if strength is 1. then initialise the latents to noise, else initial to image + noise
+        latents = noise if is_strength_max else model.scheduler.add_noise(image_latents, noise, timestep)
+        # if pure noise then scale the initial latents by the  Scheduler's init sigma
+        latents = latents * model.scheduler.init_noise_sigma if is_strength_max else latents
+    elif add_noise:
+        noise = latents.to(device)
+        latents = noise * model.scheduler.init_noise_sigma
+    else:
+        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        latents = image_latents.to(device)
+
+    outputs = (latents,)
+
+    if return_noise:
+        outputs += (noise,)
+
+    if return_image_latents:
+        outputs += (image_latents,)
+
+    return outputs
+
+
+
 def main(args):
     if args.report_to == "wandb" and args.hub_token is not None:
         raise ValueError(
@@ -485,9 +634,10 @@ def main(args):
 
     test_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
-        phase="test",
+        phase="train",
         order="paired",
         size=(args.height, args.width),
+        data_list=args.validation_data_list,
     )
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset,
@@ -553,17 +703,13 @@ def main(args):
     # print("Compare", unet_com)
     ################################DEBUG############################################
     
-    ref_unet = UNet2DConditionModel_ref.from_pretrained(
-        args.pretrained_garment_model_name_or_path,
-        subfolder="unet",
-        torch_dtype=torch.float16,
-    )
 
     # Freeze vae and text encoders.
     model.vae.requires_grad_(False)
     model.text_encoder_one.requires_grad_(False)
     model.text_encoder_two.requires_grad_(False)
-    ref_unet.requires_grad_(False)
+    model.image_encoder.requires_grad_(False)
+    model.ref_unet.requires_grad_(False)
     # Set unet as trainable.
     unet.train()
 
@@ -581,7 +727,8 @@ def main(args):
     model.vae.to(accelerator.device, dtype=torch.float32)
     model.text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     model.text_encoder_two.to(accelerator.device, dtype=weight_dtype)
-    ref_unet.to(accelerator.device, dtype=weight_dtype)
+    model.ref_unet.to(accelerator.device, dtype=weight_dtype)
+    model.image_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # Create EMA for the unet.
     if args.use_ema:
@@ -689,8 +836,16 @@ def main(args):
     # download the dataset.
     if args.dataroot is None:
         assert "Please provide correct data root"
-    train_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.train_data_list)
+    # train_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.train_data_list)
     validation_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.validation_data_list)
+    
+    train_dataset = VitonHDTestDataset(
+        dataroot_path=args.dataroot,
+        phase="train",
+        order="paired",
+        size=(args.height, args.width),
+        data_list=args.train_data_list,
+    )
     
     # os._exit(os.EX_OK)
     
@@ -705,7 +860,6 @@ def main(args):
         proportion_empty_prompts=args.proportion_empty_prompts,
         caption_column=args.caption_column,
     )
-    compute_vae_encodings_fn = functools.partial(compute_vae_encodings, vae=model.vae)
     # del compute_vae_encodings_fn, compute_embeddings_fn, text_encoder_one, text_encoder_two
     # del text_encoders, tokenizers, vae
     gc.collect()
@@ -714,7 +868,7 @@ def main(args):
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        shuffle=True,
+        shuffle=False,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
@@ -776,12 +930,9 @@ def main(args):
 
     # developing log
     # print(f"the in channel number: {unet.config.in_channels}")
-    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", test_dataloader)
+    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", train_dataloader)
     
-    os._exit(os.EX_OK)
-    
-    # pretrain log
-    log_validation()
+    # os._exit(os.EX_OK)
     
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -831,13 +982,97 @@ def main(args):
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
+    # generator = torch.Generator(accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+
 
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(unet):
-                # Sample noise that we'll add to the latents
-                model_input = batch["model_input"].to(accelerator.device)
+                check_sample_elements(batch)
+                img_emb_list = []
+                for i in range(batch['cloth'].shape[0]):
+                    img_emb_list.append(batch['cloth'][i])
+                
+                prompt = batch["caption"]
+                pose_img = batch["pose_img"]
+                cloth = batch["cloth_pure"]
+
+                num_prompts = batch['cloth'].shape[0]                                        
+
+                if not isinstance(prompt, List):
+                    prompt = [prompt] * num_prompts
+                
+                image_embeds = torch.cat(img_emb_list,dim=0)
+
+                output_hidden_state = not isinstance(unet.encoder_hid_proj, ImageProjection)
+                image_embeds, _ = encode_image(
+                    model, image_embeds, accelerator.device, 1, output_hidden_state
+                )
+                print(f"image_embeds type {image_embeds.dtype}")
+                # TODO: This is the temp solution of dtype assigment
+                tmp_dtype = next(unet.parameters()).dtype
+                image_embeds = unet.encoder_hid_proj(image_embeds.to(tmp_dtype))
+                print(f"image_embeds shape: {image_embeds.shape}")
+                # os._exit(os.EX_OK)
+                            
+                (
+                    prompt_embeds,
+                    pooled_prompt_embeds,
+                ) = encode_prompt(
+                    prompt,
+                    text_encoders=text_encoders,
+                    tokenizers=tokenizers,
+                    proportion_empty_prompts=args.proportion_empty_prompts,
+                )
+                
+                print(f"prompt_embeds shape: {prompt_embeds.shape}")
+                # os._exit(os.EX_OK)
+                
+                prompt_cloth = batch["caption_cloth"]
+                if not isinstance(prompt_cloth, List):
+                    prompt_cloth = [prompt_cloth] * num_prompts
+                
+                (
+                    prompt_embeds_c,
+                    _,
+                ) = encode_prompt(
+                    prompt_cloth,
+                    text_encoders=text_encoders,
+                    tokenizers=tokenizers,
+                    proportion_empty_prompts=args.proportion_empty_prompts,
+                )
+                
+                init_image = model.image_processor.preprocess(
+                    batch["image"], height=args.height, width=args.width, crops_coords=None, resize_mode="default"
+                )
+                mask = model.mask_processor.preprocess(
+                    batch["inpaint_mask"], height=args.height, width=args.width, crops_coords=None, resize_mode="default"
+                )
+                if init_image.shape[1] == 4:
+                    # if images are in latent space, we can't mask it
+                    masked_image = None
+                else:
+                    masked_image = init_image * (mask < 0.5)
+                
+                model_input = compute_vae_encodings(init_image, model.vae)
+                print(f"model_input: {model_input.shape}")
+                mask = torch.nn.functional.interpolate(
+                    mask, size=(args.height // model.vae_scale_factor, args.width // model.vae_scale_factor)
+                )
+                mask = mask.to(device=accelerator.device, dtype=weight_dtype)
+                print(f"mask: {mask.shape}")
+                masked_image_latents = compute_vae_encodings(masked_image, model.vae)
+                print(f"masked_image_latents: {masked_image_latents.shape}")
+                
+                pose_img_latents = compute_vae_encodings(pose_img, model.vae)
+                print(f"pose_img_latents: {pose_img_latents.shape}")
+                
+                cloth_latents = compute_vae_encodings(cloth, model.vae)
+                print(f"cloth_latents: {cloth_latents.shape}")
+                # os._exit(os.EX_OK)
+                
+                
                 noise = torch.randn_like(model_input)
                 if args.noise_offset:
                     # https://www.crosslabs.org//blog/diffusion-with-offset-noise
@@ -849,20 +1084,27 @@ def main(args):
                 if args.timestep_bias_strategy == "none":
                     # Sample a random timestep for each image without bias.
                     timesteps = torch.randint(
-                        0, noise_scheduler.config.num_train_timesteps, (bsz,), device=model_input.device
+                        0, model.noise_scheduler.config.num_train_timesteps, (bsz,), device=model_input.device
                     )
                 else:
                     # Sample a random timestep for each image, potentially biased by the timestep weights.
                     # Biasing the timestep weights allows us to spend less time training irrelevant timesteps.
-                    weights = generate_timestep_weights(args, noise_scheduler.config.num_train_timesteps).to(
+                    weights = generate_timestep_weights(args, model.noise_scheduler.config.num_train_timesteps).to(
                         model_input.device
                     )
                     timesteps = torch.multinomial(weights, bsz, replacement=True).long()
 
                 # Add noise to the model input according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
-                noisy_model_input = noise_scheduler.add_noise(model_input, noise, timesteps)
+                # Sample noise that we'll add to the latents
 
+                noisy_model_input = model.noise_scheduler.add_noise(model_input, noise, timesteps)
+                print(f"noisy_model_input shape: {noisy_model_input.shape}")
+                # os._exit(os.EX_OK)
+                
+                latent_model_input = torch.cat([noisy_model_input, mask, masked_image_latents,pose_img_latents], dim=1)
+                print(f"latent_model_input shape: {latent_model_input.shape}")
+                
                 # time ids
                 def compute_time_ids(original_size, crops_coords_top_left):
                     # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
@@ -871,40 +1113,62 @@ def main(args):
                     add_time_ids = torch.tensor([add_time_ids])
                     add_time_ids = add_time_ids.to(accelerator.device, dtype=weight_dtype)
                     return add_time_ids
-
+                
+                original_size = (args.height, args.width)
+                crops_coords_top_left = (0, 0)
                 add_time_ids = torch.cat(
-                    [compute_time_ids(s, c) for s, c in zip(batch["original_sizes"], batch["crop_top_lefts"])]
+                    [compute_time_ids(s, c) for s, c in zip([original_size] * args.train_batch_size, [crops_coords_top_left] * args.train_batch_size)]
                 )
+                
+                add_text_embeds = pooled_prompt_embeds
+                print(f"add_text_embeds shape: {add_text_embeds.shape}")
+                print(f"add_time_ids shape: {add_time_ids.shape}")
+                
+                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                added_cond_kwargs.update({"image_embeds": image_embeds})
 
+                
                 # Predict the noise residual
-                unet_added_conditions = {"time_ids": add_time_ids}
-                prompt_embeds = batch["prompt_embeds"].to(accelerator.device)
-                pooled_prompt_embeds = batch["pooled_prompt_embeds"].to(accelerator.device)
-                unet_added_conditions.update({"text_embeds": pooled_prompt_embeds})
-                model_pred = unet(
-                    noisy_model_input,
+                down,reference_features = model.ref_unet(
+                    cloth_latents,
                     timesteps,
-                    prompt_embeds,
-                    added_cond_kwargs=unet_added_conditions,
+                    prompt_embeds_c,
+                    return_dict=False
+                )
+                # print(f"reference_features: {reference_features}")
+                # os._exit(os.EX_OK)
+                
+                reference_features = list(reference_features)
+                
+                model_pred = unet(
+                    latent_model_input,
+                    timesteps,
+                    encoder_hidden_states=prompt_embeds,
+                    timestep_cond=None,
+                    cross_attention_kwargs=None,
+                    added_cond_kwargs=added_cond_kwargs,
                     return_dict=False,
+                    garment_features=reference_features,
                 )[0]
+                
+                os._exit(os.EX_OK)
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
                     # set prediction_type of scheduler if defined
-                    noise_scheduler.register_to_config(prediction_type=args.prediction_type)
+                    model.noise_scheduler.register_to_config(prediction_type=args.prediction_type)
 
-                if noise_scheduler.config.prediction_type == "epsilon":
+                if model.noise_scheduler.config.prediction_type == "epsilon":
                     target = noise
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(model_input, noise, timesteps)
-                elif noise_scheduler.config.prediction_type == "sample":
+                elif model.noise_scheduler.config.prediction_type == "v_prediction":
+                    target = model.noise_scheduler.get_velocity(model_input, noise, timesteps)
+                elif model.noise_scheduler.config.prediction_type == "sample":
                     # We set the target to latents here, but the model_pred will return the noise sample prediction.
                     target = model_input
                     # We will have to subtract the noise residual from the prediction to get the target sample.
                     model_pred = model_pred - noise
                 else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                    raise ValueError(f"Unknown prediction type {model.noise_scheduler.config.prediction_type}")
 
                 if args.snr_gamma is None:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
@@ -912,13 +1176,13 @@ def main(args):
                     # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
                     # Since we predict the noise instead of x_0, the original formulation is slightly changed.
                     # This is discussed in Section 4.2 of the same paper.
-                    snr = compute_snr(noise_scheduler, timesteps)
+                    snr = compute_snr(model.noise_scheduler, timesteps)
                     mse_loss_weights = torch.stack([snr, args.snr_gamma * torch.ones_like(timesteps)], dim=1).min(
                         dim=1
                     )[0]
-                    if noise_scheduler.config.prediction_type == "epsilon":
+                    if model.noise_scheduler.config.prediction_type == "epsilon":
                         mse_loss_weights = mse_loss_weights / snr
-                    elif noise_scheduler.config.prediction_type == "v_prediction":
+                    elif model.noise_scheduler.config.prediction_type == "v_prediction":
                         mse_loss_weights = mse_loss_weights / (snr + 1)
 
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
@@ -980,139 +1244,78 @@ def main(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
-                logger.info(
-                    f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
-                    f" {args.validation_prompt}."
-                )
-                if args.use_ema:
-                    # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                    ema_unet.store(unet.parameters())
-                    ema_unet.copy_to(unet.parameters())
-
-                # create pipeline
-                # vae = AutoencoderKL.from_pretrained(
-                #     vae_path,
-                #     subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
-                #     revision=args.revision,
-                #     variant=args.variant,
-                # )
-                pipeline = StableDiffusionXLPipeline.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    vae=vae,
-                    unet=accelerator.unwrap_model(unet),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                if args.prediction_type is not None:
-                    scheduler_args = {"prediction_type": args.prediction_type}
-                    pipeline.scheduler = pipeline.scheduler.from_config(pipeline.scheduler.config, **scheduler_args)
-
-                pipeline = pipeline.to(accelerator.device)
-                pipeline.set_progress_bar_config(disable=True)
-
-                # run inference
-                generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
-                pipeline_args = {"prompt": args.validation_prompt}
-
-                with autocast_ctx:
-                    images = [
-                        pipeline(**pipeline_args, generator=generator, num_inference_steps=25).images[0]
-                        for _ in range(args.num_validation_images)
-                    ]
-
-                for tracker in accelerator.trackers:
-                    if tracker.name == "tensorboard":
-                        np_images = np.stack([np.asarray(img) for img in images])
-                        tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
-                    if tracker.name == "wandb":
-                        tracker.log(
-                            {
-                                "validation": [
-                                    wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                                    for i, image in enumerate(images)
-                                ]
-                            }
-                        )
-
-                del pipeline
-                torch.cuda.empty_cache()
-
-                if args.use_ema:
-                    # Switch back to the original UNet parameters.
-                    ema_unet.restore(unet.parameters())
+        # if accelerator.is_main_process:
+            # log_validation
 
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        unet = unwrap_model(unet)
-        if args.use_ema:
-            ema_unet.copy_to(unet.parameters())
+    # if accelerator.is_main_process:
+    #     unet = unwrap_model(unet)
+    #     if args.use_ema:
+    #         ema_unet.copy_to(unet.parameters())
 
-        # Serialize pipeline.
-        vae = AutoencoderKL.from_pretrained(
-            vae_path,
-            subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
-        pipeline = StableDiffusionXLPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            unet=unet,
-            vae=vae,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
-        if args.prediction_type is not None:
-            scheduler_args = {"prediction_type": args.prediction_type}
-            pipeline.scheduler = pipeline.scheduler.from_config(pipeline.scheduler.config, **scheduler_args)
-        pipeline.save_pretrained(args.output_dir)
+    #     # Serialize pipeline.
+    #     vae = AutoencoderKL.from_pretrained(
+    #         vae_path,
+    #         subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
+    #         revision=args.revision,
+    #         variant=args.variant,
+    #         torch_dtype=weight_dtype,
+    #     )
+    #     pipeline = StableDiffusionXLPipeline.from_pretrained(
+    #         args.pretrained_model_name_or_path,
+    #         unet=unet,
+    #         vae=vae,
+    #         revision=args.revision,
+    #         variant=args.variant,
+    #         torch_dtype=weight_dtype,
+    #     )
+    #     if args.prediction_type is not None:
+    #         scheduler_args = {"prediction_type": args.prediction_type}
+    #         pipeline.scheduler = pipeline.scheduler.from_config(pipeline.scheduler.config, **scheduler_args)
+    #     pipeline.save_pretrained(args.output_dir)
 
-        # run inference
-        images = []
-        if args.validation_prompt and args.num_validation_images > 0:
-            pipeline = pipeline.to(accelerator.device)
-            generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
+    #     # run inference
+    #     images = []
+    #     if args.validation_prompt and args.num_validation_images > 0:
+    #         pipeline = pipeline.to(accelerator.device)
+    #         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed else None
 
-            with autocast_ctx:
-                images = [
-                    pipeline(args.validation_prompt, num_inference_steps=25, generator=generator).images[0]
-                    for _ in range(args.num_validation_images)
-                ]
+    #         with autocast_ctx:
+    #             images = [
+    #                 pipeline(args.validation_prompt, num_inference_steps=25, generator=generator).images[0]
+    #                 for _ in range(args.num_validation_images)
+    #             ]
 
-            for tracker in accelerator.trackers:
-                if tracker.name == "tensorboard":
-                    np_images = np.stack([np.asarray(img) for img in images])
-                    tracker.writer.add_images("test", np_images, epoch, dataformats="NHWC")
-                if tracker.name == "wandb":
-                    tracker.log(
-                        {
-                            "test": [
-                                wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
-                                for i, image in enumerate(images)
-                            ]
-                        }
-                    )
+    #         for tracker in accelerator.trackers:
+    #             if tracker.name == "tensorboard":
+    #                 np_images = np.stack([np.asarray(img) for img in images])
+    #                 tracker.writer.add_images("test", np_images, epoch, dataformats="NHWC")
+    #             if tracker.name == "wandb":
+    #                 tracker.log(
+    #                     {
+    #                         "test": [
+    #                             wandb.Image(image, caption=f"{i}: {args.validation_prompt}")
+    #                             for i, image in enumerate(images)
+    #                         ]
+    #                     }
+    #                 )
 
-        if args.push_to_hub:
-            save_model_card(
-                repo_id=repo_id,
-                images=images,
-                validation_prompt=args.validation_prompt,
-                base_model=args.pretrained_model_name_or_path,
-                dataset_name=args.dataset_name,
-                repo_folder=args.output_dir,
-                vae_path=args.pretrained_vae_model_name_or_path,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
+    #     if args.push_to_hub:
+    #         save_model_card(
+    #             repo_id=repo_id,
+    #             images=images,
+    #             validation_prompt=args.validation_prompt,
+    #             base_model=args.pretrained_model_name_or_path,
+    #             dataset_name=args.dataset_name,
+    #             repo_folder=args.output_dir,
+    #             vae_path=args.pretrained_vae_model_name_or_path,
+    #         )
+    #         upload_folder(
+    #             repo_id=repo_id,
+    #             folder_path=args.output_dir,
+    #             commit_message="End of training",
+    #             ignore_patterns=["step_*", "epoch_*"],
+    #         )
 
     accelerator.end_training()
 
