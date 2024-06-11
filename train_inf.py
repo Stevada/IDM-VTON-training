@@ -22,6 +22,7 @@ import gc
 import logging
 import math
 import os
+import os.path as osp
 import random
 import shutil
 from contextlib import nullcontext
@@ -155,8 +156,7 @@ def check_model_components(model):
     
     if missing_components:
         raise ValueError(f"Missing required model components: {', '.join(missing_components)}")
-    else:
-        print("All required model components are present.")
+    
 
 def check_sample_elements(sample):
     required_keys = [
@@ -168,8 +168,6 @@ def check_sample_elements(sample):
     
     if missing_keys:
         raise ValueError(f"Missing keys in sample: {missing_keys}")
-    else:
-        print("All required keys are present in the sample.")
 
 def log_validation(unet, model, args, accelerator, weight_dtype, log_name, validation_dataloader):
     
@@ -290,9 +288,9 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                     import wandb
                     formatted_images = []
                     for log in image_logs:
-                        logger.info("Adding image to tacker")
+                        # logger.info("Adding image to tacker")
                         formatted_images.append(wandb.Image(log["garment"], caption="garment images"))
-                        formatted_images.append(wandb.Image(log["model"], caption="masked model images"))
+                        # formatted_images.append(wandb.Image(log["model"], caption="masked model images"))
                         formatted_images.append(wandb.Image(log["orig_img"], caption="original images"))
                         formatted_images.append(wandb.Image(log["inpaint mask"], caption="inpaint mask"))
                         formatted_images.append(wandb.Image(log["pose_img"], caption="pose_img"))
@@ -648,11 +646,11 @@ def main(args):
 
     model = ModelContainer(args,accelerator)
     
-    log_validation(model.unet, model, args, accelerator, torch.float16, "old_model", test_dataloader)
+    # log_validation(model.unet, model, args, accelerator, torch.float16, "old_model", test_dataloader)
 
     unet = UNet2DConditionModel_tryon.from_pretrained(
         args.pretrained_nonfreeze_model_name_or_path, 
-        subfolder="unet", 
+        # subfolder="unet", 
         revision=args.revision, 
         variant=args.variant,
         encoder_hid_dim_type="ip_image_proj",
@@ -660,7 +658,7 @@ def main(args):
         low_cpu_mem_usage=False
     )
     
-    load_model_with_zeroed_mismatched_keys(unet, "./checkpoints/stable-diffusion-xl-1.0-inpainting-0.1/unet/diffusion_pytorch_model.safetensors")
+    load_model_with_zeroed_mismatched_keys(unet, osp.join(args.pretrained_nonfreeze_model_name_or_path, "diffusion_pytorch_model.safetensors"))
     def replace_first_conv_layer(unet_model, new_in_channels):
         # Access the first convolutional layer
         # This example assumes the first conv layer is directly an attribute of the model
@@ -1114,7 +1112,7 @@ def main(args):
                 # time ids
                 def compute_time_ids(original_size, crops_coords_top_left):
                     # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-                    target_size = (args.resolution, args.resolution)
+                    target_size = (args.height, args.width)
                     add_time_ids = list(original_size + crops_coords_top_left + target_size)
                     add_time_ids = torch.tensor([add_time_ids])
                     add_time_ids = add_time_ids.to(accelerator.device, dtype=weight_dtype)

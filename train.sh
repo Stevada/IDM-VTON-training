@@ -21,7 +21,7 @@ accelerate launch train.py \
   --report_to="wandb" \
   --checkpointing_steps=5000 \
   --output_dir="output" \
-  --dataroot="/workspace/MagicClothing/data/VITON-HD"  \
+  --dataroot="./data/VITON-HD"  \
   --train_data_list="subtrain_1.txt" \
   --validation_data_list="subtrain_1.txt" \
   --original_model_name_or_path="./checkpoints/IDM-VTON"  \

@@ -1726,14 +1726,14 @@ class StableDiffusionXLInpaintPipeline(
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
         add_time_ids = add_time_ids.to(device)
-        print(f"prompt_embeds shape: {prompt_embeds.shape}, {prompt_embeds.dtype}")
+        # print(f"prompt_embeds shape: {prompt_embeds.shape}, {prompt_embeds.dtype}")
         if ip_adapter_image is not None:
             image_embeds = self.prepare_ip_adapter_image_embeds(
                 ip_adapter_image, device, batch_size * num_images_per_prompt
             )
 
             #project outside for loop
-            print(f"image_embeds type: {image_embeds.dtype}")
+            # print(f"image_embeds type: {image_embeds.dtype}")
             image_embeds = self.unet.encoder_hid_proj(image_embeds).to(prompt_embeds.dtype)
 
 

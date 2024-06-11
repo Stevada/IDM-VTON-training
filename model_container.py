@@ -15,11 +15,11 @@ class ModelContainer:
             subfolder="vae",
             torch_dtype=torch.float16,
         )
-        self.unet = UNet2DConditionModel.from_pretrained(
-            args.pretrained_model_name_or_path,
-            subfolder="unet",
-            torch_dtype=torch.float16,
-        )
+        # self.unet = UNet2DConditionModel.from_pretrained(
+        #     args.pretrained_model_name_or_path,
+        #     subfolder="unet",
+        #     torch_dtype=torch.float16,
+        # )
         self.image_encoder = CLIPVisionModelWithProjection.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="image_encoder",

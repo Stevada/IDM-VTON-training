@@ -666,7 +666,7 @@ class VitonHDTestDataset(data.Dataset):
  
         pose_img = Image.open(
             os.path.join(self.dataroot, self.phase, "image-densepose", im_name)
-        )
+        ).resize((self.width,self.height))
         pose_img = self.transform(pose_img)  # [-1,1]
  
         result = {}
