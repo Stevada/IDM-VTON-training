@@ -1,4 +1,6 @@
 # coding=utf-8
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
+
 import json
 import os
 import os.path as osp
@@ -346,6 +348,7 @@ class CPDataset(data.Dataset):
         c_img = np.array(c_img).astype(np.uint8)
         result = {
             "GT": im,
+            "image": im,
             # "inpaint_image": inpaint_warp_cloth,
             # "inpaint_image": im * inpaint_mask,
             "inpaint_image": agnostic,
@@ -353,6 +356,7 @@ class CPDataset(data.Dataset):
             "inpaint_mask": inpaint_mask,
             "mask": mask,
             "ref_imgs": ref_image,
+            "cloth_pure": ref_image,
             "warp_feat": feat,
             "file_name": self.im_names[index],
             "cloth_array": np.array(c_img).astype(np.uint8),
@@ -516,8 +520,8 @@ class CPDatasetV2(CPDataset):
         result = {
             "GT": im,
             # "inpaint_image": inpaint_warp_cloth,
-            # "inpaint_image": im * inpaint_mask,
-            "inpaint_image": agnostic,
+            "inpaint_image": im * inpaint_mask,
+            # "inpaint_image": agnostic,
             "inpaint_mask": 1-inpaint_mask,
             "mask": mask,
             "ref_imgs": ref_image,
@@ -527,6 +531,8 @@ class CPDatasetV2(CPDataset):
             "caption": "model is wearing a " + caption_string,
             "pose_img": dp_im,
             "cloth": self.clip_processor(images=im_pil, return_tensors="pt").pixel_values,
+            "cloth_pure": ref_image,
+            "image": im,
         }
         return result
 
@@ -577,6 +583,110 @@ def pre_alignment(c, cm, parse_roi):
     cm = blank_cm  # PIL Image
     # cm.save(os.path.join(clothmask_align_dst, cmname))
     return c, cm
+
+class VitonHDTestDataset(data.Dataset):
+    def __init__(
+        self,
+        dataroot_path: str,
+        phase: Literal["train", "test"],
+        order: Literal["paired", "unpaired"] = "paired",
+        size: Tuple[int, int] = (512, 384),
+        data_list: Optional[str] = None,
+    ):
+        super(VitonHDTestDataset, self).__init__()
+        self.dataroot = dataroot_path
+        self.phase = phase
+        self.height = size[0]
+        self.width = size[1]
+        self.size = size
+        self.transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        self.toTensor = transforms.ToTensor()
+
+        self.order = order
+        self.toTensor = transforms.ToTensor()
+
+        im_names = []
+        c_names = []
+        dataroot_names = []
+
+
+        filename = os.path.join(dataroot_path, data_list)
+
+        with open(filename, "r") as f:
+            for line in f.readlines():
+                if phase == "train":
+                    im_name, _ = line.strip().split()
+                    c_name = im_name
+                else:
+                    if order == "paired":
+                        im_name, _ = line.strip().split()
+                        c_name = im_name
+                    else:
+                        im_name, c_name = line.strip().split()
+
+                im_names.append(im_name)
+                c_names.append(c_name)
+                dataroot_names.append(dataroot_path)
+
+        self.im_names = im_names
+        self.c_names = c_names
+        self.dataroot_names = dataroot_names
+        self.clip_processor = CLIPImageProcessor()
+    def __getitem__(self, index):
+        c_name = self.c_names[index]
+        im_name = self.im_names[index]
+        
+        # load captions
+        caption_name = osp.join(self.dataroot, self.phase, "cloth", c_name).replace("cloth", "cloth_caption").replace(".jpg", ".txt")
+        # Check if the file exists
+        if os.path.exists(caption_name):
+            with open(caption_name, 'r') as file:
+                caption_string = file.read()
+        else:
+            print("File does not exist. ", caption_name)
+            caption_string = "A cloth"  # Set caption_string to an empty string or handle the case when the file doesn't exist
+        
+        cloth = Image.open(os.path.join(self.dataroot, self.phase, "cloth", c_name))
+        
+        im_pil_big = Image.open(
+            os.path.join(self.dataroot, self.phase, "image", im_name)
+        ).resize((self.width,self.height))
+        image = self.transform(im_pil_big)
+
+        mask = Image.open(os.path.join(self.dataroot, self.phase, "agnostic-mask", im_name.replace('.jpg','_mask.png'))).resize((self.width,self.height))
+        mask = self.toTensor(mask)
+        mask = mask[:1]
+        mask = 1-mask
+        im_mask = image * mask
+ 
+        pose_img = Image.open(
+            os.path.join(self.dataroot, self.phase, "image-densepose", im_name)
+        )
+        pose_img = self.transform(pose_img)  # [-1,1]
+ 
+        result = {}
+        result["c_name"] = c_name
+        result["im_name"] = im_name
+        result["image"] = image
+        result["cloth_pure"] = self.transform(cloth)
+        result["cloth"] = self.clip_processor(images=cloth, return_tensors="pt").pixel_values
+        result["inpaint_mask"] =1-mask
+        result["im_mask"] = im_mask
+        result["caption_cloth"] = "a photo of " + caption_string
+        result["caption"] = "model is wearing a " + caption_string
+        result["pose_img"] = pose_img
+
+        return result
+
+    def __len__(self):
+        # model images + cloth image
+        return len(self.im_names)
+
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_ava
 from diffusers.utils.torch_utils import is_compiled_module
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
 from src.unet_hacked_tryon import UNet2DConditionModel as UNet2DConditionModel_tryon
-from cp_dataset import CPDatasetV2 as CPDataset
+from cp_dataset import CPDatasetV2 as CPDataset, VitonHDTestDataset
 
 from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
 
@@ -141,29 +141,38 @@ def import_model_class_from_model_name_or_path(
 def log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dataloader = None, is_final_validation=False, is_developing_validation=False):
     logger.info("Running validation... ")
     if is_developing_validation and args.original_model_name_or_path is not None:
+        unet = accelerator.unwrap_model(unet)
+        print(f"The unet: {unet}")
         pipeline = TryonPipeline.from_pretrained(
-            args.original_model_name_or_path,
-            vae=freeze.vae,
-            revision=args.revision,
-            variant=args.variant,
-            torch_dtype=weight_dtype,
-        )
+                args.original_model_name_or_path,
+                unet=unet,
+                vae=freeze["vae"],
+                feature_extractor= CLIPImageProcessor(),
+                text_encoder = freeze["text_encoder_one"],
+                text_encoder_2 = freeze["text_encoder_two"],
+                tokenizer = freeze["tokenizer_one"],
+                tokenizer_2 = freeze["tokenizer_two"],
+                scheduler = freeze["noise_scheduler"],
+                image_encoder=freeze["image_encoder"],
+                torch_dtype=torch.float16,
+        ).to(accelerator.device)
+        pipeline.unet_encoder = freeze["ref_unet"]
     elif not is_final_validation:
         unet = accelerator.unwrap_model(unet)
         pipeline = TryonPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 unet=unet,
-                vae=vae,
+                vae=freeze["vae"],
                 feature_extractor= CLIPImageProcessor(),
-                text_encoder = freeze.text_encoder_one,
-                text_encoder_2 = freeze.text_encoder_two,
-                tokenizer = freeze.tokenizer_one,
-                tokenizer_2 = freeze.tokenizer_two,
-                scheduler = freeze.noise_scheduler,
-                image_encoder=freeze.image_encoder,
+                text_encoder = freeze["text_encoder_one"],
+                text_encoder_2 = freeze["text_encoder_two"],
+                tokenizer = freeze["tokenizer_one"],
+                tokenizer_2 = freeze["tokenizer_two"],
+                scheduler = freeze["noise_scheduler"],
+                image_encoder=freeze["image_encoder"],
                 torch_dtype=torch.float16,
         ).to(accelerator.device)
-        pipeline.unet_encoder = freeze.ref_unet
+        pipeline.unet_encoder = freeze["ref_unet"]
     else:
         if args.pretrained_vae_model_name_or_path is not None:
             vae = AutoencoderKL.from_pretrained(args.pretrained_vae_model_name_or_path, torch_dtype=weight_dtype)
@@ -250,14 +259,14 @@ def log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dat
                             negative_prompt_embeds=negative_prompt_embeds,
                             pooled_prompt_embeds=pooled_prompt_embeds,
                             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                            num_inference_steps=args.num_inference_steps,
+                            num_inference_steps=args.inference_steps,
                             generator=generator,
                             strength = 1.0,
                             pose_img = batch['pose_img'],  # signed off densepose [-1,1]
                             text_embeds_cloth=prompt_embeds_c,
-                            cloth = batch["ref_imgs"].to(accelerator.device),  # signed off
+                            cloth = batch["cloth_pure"].to(accelerator.device),  # signed off
                             mask_image=batch['inpaint_mask'], 
-                            image=(batch['GT']+1.0)/2.0, 
+                            image=(batch['image']+1.0)/2.0, 
                             height=args.height,
                             width=args.width,
                             guidance_scale=args.guidance_scale,
@@ -265,9 +274,9 @@ def log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dat
                         )[0]
                         
                         image_logs.append({
-                            "garment": batch["ref_imgs"], 
-                            "model": batch['GT'], 
-                            "orig_img": batch['GT'], 
+                            "garment": batch["cloth_pure"], 
+                            "model": batch['image'], 
+                            "orig_img": batch['image'], 
                             "samples": images, 
                             "prompt": prompt,
                             "inpaint mask": batch['inpaint_mask'],
@@ -661,12 +670,20 @@ def parse_args(input_args=None):
         type=str,
         default=None,
     )
-
     parser.add_argument(
         "--validation_data_list",
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--inference_steps",
+        type=int,
+        default=20,
+    )
+    parser.add_argument("--width",type=int,default=768,)
+    parser.add_argument("--height",type=int,default=1024,)
+    parser.add_argument("--guidance_scale",type=float,default=2.0,)
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -925,12 +942,15 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant, low_cpu_mem_usage=False
     )
     
-    load_model_with_zeroed_mismatched_keys(unet, "./diffusion_pytorch_model.safetensors")
+    # load_model_with_zeroed_mismatched_keys(unet, "/workspace/IDM-VTON/checkpoints/stable-diffusion-xl-1.0-inpainting-0.1/unet/diffusion_pytorch_model.safetensors")
     def replace_first_conv_layer(unet_model, new_in_channels):
         # Access the first convolutional layer
         # This example assumes the first conv layer is directly an attribute of the model
         # Adjust the attribute access based on your model's structure
         original_first_conv = unet_model.conv_in
+        
+        if(original_first_conv == new_in_channels):
+            return
         
         # Create a new Conv2d layer with the desired number of input channels
         # and the same parameters as the original layer
@@ -969,7 +989,6 @@ def main(args):
         subfolder="unet",
         torch_dtype=torch.float16,
     )
-    # 
 
     # Freeze vae and text encoders.
     vae.requires_grad_(False)
@@ -1136,6 +1155,19 @@ def main(args):
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
+    
+    test_dataset = VitonHDTestDataset(
+        dataroot_path=args.dataroot,
+        phase="test",
+        order="paired",
+        size=(args.height, args.width),
+    )
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset,
+        shuffle=False,
+        batch_size=args.train_batch_size,
+        num_workers=args.dataloader_num_workers,
+    )
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1194,7 +1226,7 @@ def main(args):
         "ref_unet": ref_unet,
     }
     # developing log
-    log_validation(unet, freeze, args, accelerator, weight_dtype, validation_dataloader, False, True)
+    log_validation(unet, freeze, args, accelerator, weight_dtype, test_dataloader, False, True)
     
     os._exit(os.EX_OK)
     
