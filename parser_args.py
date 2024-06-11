@@ -182,6 +182,11 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--validation_steps",
+        type=int,
+        default=500,
+    )
+    parser.add_argument(
         "--checkpoints_total_limit",
         type=int,
         default=None,

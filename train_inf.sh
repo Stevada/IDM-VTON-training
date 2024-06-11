@@ -29,5 +29,6 @@ accelerate launch train_inf.py \
   --tracker_project_name="train_controlnet" \
   --tracker_entity="anzhangusc" \
   --pretrained_nonfreeze_model_name_or_path="./checkpoints/stable-diffusion-xl-1.0-inpainting-0.1"  \
+  --validation_steps=1  \
   # --image_encoder_path="./checkpoints/image_encoder"  \
   # --enable_xformers_memory_efficient_attention \

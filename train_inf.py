@@ -348,25 +348,25 @@ def encode_image(model, image, device, num_images_per_prompt, output_hidden_stat
         image = model.feature_extractor(image, return_tensors="pt").pixel_values
 
     image = image.to(device=device, dtype=dtype)
-    print(f"encode image (initial): {image.dtype}")
+    # print(f"encode image (initial): {image.dtype}")
     if output_hidden_states:
         image_enc_hidden_states = model.image_encoder(image, output_hidden_states=True).hidden_states[-2]
-        print(f"encode image (after encoding): {image_enc_hidden_states.dtype}")
+        # print(f"encode image (after encoding): {image_enc_hidden_states.dtype}")
         
         image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
-        print(f"encode image (after repeat_interleave): {image_enc_hidden_states.dtype}")
+        # print(f"encode image (after repeat_interleave): {image_enc_hidden_states.dtype}")
         
         uncond_image_enc_hidden_states = model.image_encoder(
             torch.zeros_like(image), output_hidden_states=True
         ).hidden_states[-2]
-        print(f"encode image (uncond encoding): {uncond_image_enc_hidden_states.dtype}")
+        # print(f"encode image (uncond encoding): {uncond_image_enc_hidden_states.dtype}")
         
         uncond_image_enc_hidden_states = uncond_image_enc_hidden_states.repeat_interleave(
             num_images_per_prompt, dim=0
         )
-        print(f"encode image (uncond after repeat_interleave): {uncond_image_enc_hidden_states.dtype}")
+        # print(f"encode image (uncond after repeat_interleave): {uncond_image_enc_hidden_states.dtype}")
 
-        print(f"encode image (final): {image_enc_hidden_states.dtype}")
+        # print(f"encode image (final): {image_enc_hidden_states.dtype}")
 
 
         return image_enc_hidden_states, uncond_image_enc_hidden_states
@@ -837,7 +837,13 @@ def main(args):
     if args.dataroot is None:
         assert "Please provide correct data root"
     # train_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.train_data_list)
-    validation_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.validation_data_list)
+    validation_dataset = VitonHDTestDataset(
+        dataroot_path=args.dataroot,
+        phase="train",
+        order="paired",
+        size=(args.height, args.width),
+        data_list=args.validation_data_list,
+    )
     
     train_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
@@ -1009,11 +1015,11 @@ def main(args):
                 image_embeds, _ = encode_image(
                     model, image_embeds, accelerator.device, 1, output_hidden_state
                 )
-                print(f"image_embeds type {image_embeds.dtype}")
+                # print(f"image_embeds type {image_embeds.dtype}")
                 # TODO: This is the temp solution of dtype assigment
                 tmp_dtype = next(unet.parameters()).dtype
                 image_embeds = unet.encoder_hid_proj(image_embeds.to(tmp_dtype))
-                print(f"image_embeds shape: {image_embeds.shape}")
+                # print(f"image_embeds shape: {image_embeds.shape}")
                 # os._exit(os.EX_OK)
                             
                 (
@@ -1026,7 +1032,7 @@ def main(args):
                     proportion_empty_prompts=args.proportion_empty_prompts,
                 )
                 
-                print(f"prompt_embeds shape: {prompt_embeds.shape}")
+                # print(f"prompt_embeds shape: {prompt_embeds.shape}")
                 # os._exit(os.EX_OK)
                 
                 prompt_cloth = batch["caption_cloth"]
@@ -1056,20 +1062,20 @@ def main(args):
                     masked_image = init_image * (mask < 0.5)
                 
                 model_input = compute_vae_encodings(init_image, model.vae)
-                print(f"model_input: {model_input.shape}")
+                # print(f"model_input: {model_input.shape}")
                 mask = torch.nn.functional.interpolate(
                     mask, size=(args.height // model.vae_scale_factor, args.width // model.vae_scale_factor)
                 )
                 mask = mask.to(device=accelerator.device, dtype=weight_dtype)
-                print(f"mask: {mask.shape}")
+                # print(f"mask: {mask.shape}")
                 masked_image_latents = compute_vae_encodings(masked_image, model.vae)
-                print(f"masked_image_latents: {masked_image_latents.shape}")
+                # print(f"masked_image_latents: {masked_image_latents.shape}")
                 
                 pose_img_latents = compute_vae_encodings(pose_img, model.vae)
-                print(f"pose_img_latents: {pose_img_latents.shape}")
+                # print(f"pose_img_latents: {pose_img_latents.shape}")
                 
                 cloth_latents = compute_vae_encodings(cloth, model.vae)
-                print(f"cloth_latents: {cloth_latents.shape}")
+                # print(f"cloth_latents: {cloth_latents.shape}")
                 # os._exit(os.EX_OK)
                 
                 
@@ -1099,11 +1105,11 @@ def main(args):
                 # Sample noise that we'll add to the latents
 
                 noisy_model_input = model.noise_scheduler.add_noise(model_input, noise, timesteps)
-                print(f"noisy_model_input shape: {noisy_model_input.shape}")
+                # print(f"noisy_model_input shape: {noisy_model_input.shape}")
                 # os._exit(os.EX_OK)
                 
                 latent_model_input = torch.cat([noisy_model_input, mask, masked_image_latents,pose_img_latents], dim=1)
-                print(f"latent_model_input shape: {latent_model_input.shape}")
+                # print(f"latent_model_input shape: {latent_model_input.shape}")
                 
                 # time ids
                 def compute_time_ids(original_size, crops_coords_top_left):
@@ -1121,8 +1127,8 @@ def main(args):
                 )
                 
                 add_text_embeds = pooled_prompt_embeds
-                print(f"add_text_embeds shape: {add_text_embeds.shape}")
-                print(f"add_time_ids shape: {add_time_ids.shape}")
+                # print(f"add_text_embeds shape: {add_text_embeds.shape}")
+                # print(f"add_time_ids shape: {add_time_ids.shape}")
                 
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
                 added_cond_kwargs.update({"image_embeds": image_embeds})
@@ -1151,7 +1157,7 @@ def main(args):
                     garment_features=reference_features,
                 )[0]
                 
-                os._exit(os.EX_OK)
+                # os._exit(os.EX_OK)
 
                 # Get the target for loss depending on the prediction type
                 if args.prediction_type is not None:
@@ -1237,6 +1243,8 @@ def main(args):
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
+                    if global_step % args.validation_steps == 0:
+                        log_validation(unet, model, args, accelerator, weight_dtype, "during_train", validation_dataloader)
 
             logs = {"step_loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1244,8 +1252,6 @@ def main(args):
             if global_step >= args.max_train_steps:
                 break
 
-        # if accelerator.is_main_process:
-            # log_validation
 
     accelerator.wait_for_everyone()
     # if accelerator.is_main_process:
