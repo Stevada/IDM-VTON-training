@@ -361,6 +361,7 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument("--local_rank", type=int, default=-1, help="For distributed training: local_rank")
+    parser.add_argument("--inference_sampling_step", type=int, default=None, help="Visualize the inferencing process")
     parser.add_argument(
         "--enable_npu_flash_attention", action="store_true", help="Whether or not to use npu flash attention."
     )

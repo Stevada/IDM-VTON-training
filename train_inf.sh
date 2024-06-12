@@ -15,12 +15,12 @@ accelerate launch train_inf.py \
   --gradient_checkpointing \
   --max_train_steps=10000 \
   --use_8bit_adam \
-  --learning_rate=1e-06 --lr_scheduler="constant" --lr_warmup_steps=0 \
+  --learning_rate=1e-05 --lr_scheduler="constant" --lr_warmup_steps=0 \
   --mixed_precision="fp16" \
   --report_to="wandb" \
   --checkpointing_steps=5000 \
   --output_dir="output" \
-  --dataroot="./data/VITON-HD"  \
+  --dataroot="/workspace/MagicClothing/data/VITON-HD"  \
   --train_data_list="subtrain_1.txt" \
   --validation_data_list="subtrain_1.txt" \
   --width 384  \
@@ -29,6 +29,9 @@ accelerate launch train_inf.py \
   --tracker_entity="anzhangusc" \
   --pretrained_nonfreeze_model_name_or_path="./checkpoints/sdxl-inpaint-ema"  \
   --validation_steps=50  \
+  --enable_xformers_memory_efficient_attention  \
+  --seed 42  \
+  --inference_sampling_step 5 \
   # --image_encoder_path="./checkpoints/image_encoder"  \
   # --enable_xformers_memory_efficient_attention \
   # --pretrained_vae_model_name_or_path=$VAE_NAME \

@@ -64,7 +64,7 @@ from parser_args import parse_args
 from model_container import ModelContainer
 
 from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
-
+from utils import combine_images_horizontally, combine_images_vertically
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.28.0.dev0")
@@ -144,7 +144,7 @@ def import_model_class_from_model_name_or_path(
    
 def check_model_components(model):
     required_components = [
-        'vae', 'unet', 'text_encoder_one', 'text_encoder_two',
+        'vae', 'text_encoder_one', 'text_encoder_two',
         'tokenizer_one', 'tokenizer_two', 'noise_scheduler',
         'image_encoder', 'ref_unet'
     ]
@@ -250,32 +250,51 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
 
 
                     generator = torch.Generator(pipe.device).manual_seed(args.seed) if args.seed is not None else None
-                    images = pipe(
-                        prompt_embeds=prompt_embeds,
-                        negative_prompt_embeds=negative_prompt_embeds,
-                        pooled_prompt_embeds=pooled_prompt_embeds,
-                        negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
-                        num_inference_steps=args.inference_steps,
-                        generator=generator,
-                        strength = 1.0,
-                        pose_img = sample['pose_img'],
-                        text_embeds_cloth=prompt_embeds_c,
-                        cloth = sample["cloth_pure"].to(accelerator.device),
-                        mask_image=sample['inpaint_mask'],
-                        image=(sample['image']+1.0)/2.0, 
-                        height=args.height,
-                        width=args.width,
-                        guidance_scale=args.guidance_scale,
-                        ip_adapter_image = image_embeds,
-                    )[0][0]
                     
-                    # print(f"{images[0]}")
+                    inference_guidance_scale = [0.99, 2, 5]
+                    output_images = []
+
+                    for scale in inference_guidance_scale:
+                        (images, inference_sampling_images, before_inference_images) = pipe(
+                            prompt_embeds=prompt_embeds,
+                            negative_prompt_embeds=negative_prompt_embeds,
+                            pooled_prompt_embeds=pooled_prompt_embeds,
+                            negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                            num_inference_steps=args.inference_steps,
+                            generator=generator,
+                            strength=1.0,
+                            pose_img=sample['pose_img'],
+                            text_embeds_cloth=prompt_embeds_c,
+                            cloth=sample["cloth_pure"].to(accelerator.device),
+                            mask_image=sample['inpaint_mask'],
+                            image=(sample['image'] + 1.0) / 2.0,
+                            height=args.height,
+                            width=args.width,
+                            guidance_scale=scale,
+                            ip_adapter_image=image_embeds,
+                            inference_sampling_step=args.inference_sampling_step,
+                        )
+                        
+                        # print(f"image: {images}, internal_images: {inference_sampling_images}")
+                        # os._exit(os.EX_OK)
+                        image = images[0]
+                        internal_images = []
+                        for before_var in before_inference_images:
+                            internal_images.append(before_var[0])
+                        for internal_var in inference_sampling_images:
+                            internal_images.append(internal_var[0])
+                        internal_images.append(image)
+                        horizontal_image = combine_images_horizontally(internal_images)
+                        output_images.append(horizontal_image)
+
+                    # Combine the images into one
+                    combined_image = combine_images_vertically(output_images)
 
                     image_logs.append({
                         "garment": sample["cloth_pure"], 
                         "model": sample['image'], 
                         "orig_img": sample['image'], 
-                        "samples": images, 
+                        "samples": combined_image, 
                         "prompt": prompt,
                         "inpaint mask": sample['inpaint_mask'],
                         "pose_img": sample['pose_img'],
@@ -500,66 +519,66 @@ def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator):
 
 
 
-def prepare_latents(
-    model,
-    batch_size,
-    num_channels_latents,
-    height,
-    width,
-    dtype,
-    device,
-    generator,
-    latents=None,
-    image=None,
-    timestep=None,
-    is_strength_max=True,
-    add_noise=True,
-    return_noise=False,
-    return_image_latents=False,
-):
-    shape = (batch_size, num_channels_latents, height // model.vae_scale_factor, width // model.vae_scale_factor)
-    if isinstance(generator, list) and len(generator) != batch_size:
-        raise ValueError(
-            f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-            f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-        )
+# def prepare_latents(
+#     model,
+#     batch_size,
+#     num_channels_latents,
+#     height,
+#     width,
+#     dtype,
+#     device,
+#     generator,
+#     latents=None,
+#     image=None,
+#     timestep=None,
+#     is_strength_max=True,
+#     add_noise=True,
+#     return_noise=False,
+#     return_image_latents=False,
+# ):
+#     shape = (batch_size, num_channels_latents, height // model.vae_scale_factor, width // model.vae_scale_factor)
+#     if isinstance(generator, list) and len(generator) != batch_size:
+#         raise ValueError(
+#             f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+#             f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+#         )
 
-    if (image is None or timestep is None) and not is_strength_max:
-        raise ValueError(
-            "Since strength < 1. initial latents are to be initialised as a combination of Image + Noise."
-            "However, either the image or the noise timestep has not been provided."
-        )
+#     if (image is None or timestep is None) and not is_strength_max:
+#         raise ValueError(
+#             "Since strength < 1. initial latents are to be initialised as a combination of Image + Noise."
+#             "However, either the image or the noise timestep has not been provided."
+#         )
 
-    if image.shape[1] == 4:
-        image_latents = image.to(device=device, dtype=dtype)
-        image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
-    elif return_image_latents or (latents is None and not is_strength_max):
-        image = image.to(device=device, dtype=dtype)
-        image_latents = _encode_vae_image(image=image, generator=generator)
-        image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
+#     if image.shape[1] == 4:
+#         image_latents = image.to(device=device, dtype=dtype)
+#         image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
+#     elif return_image_latents or (latents is None and not is_strength_max):
+#         image = image.to(device=device, dtype=dtype)
+#         image_latents = _encode_vae_image(image=image, generator=generator)
+#         image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
 
-    if latents is None and add_noise:
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        # if strength is 1. then initialise the latents to noise, else initial to image + noise
-        latents = noise if is_strength_max else model.scheduler.add_noise(image_latents, noise, timestep)
-        # if pure noise then scale the initial latents by the  Scheduler's init sigma
-        latents = latents * model.scheduler.init_noise_sigma if is_strength_max else latents
-    elif add_noise:
-        noise = latents.to(device)
-        latents = noise * model.scheduler.init_noise_sigma
-    else:
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        latents = image_latents.to(device)
+#     if latents is None and add_noise:
+#         noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+#         # if strength is 1. then initialise the latents to noise, else initial to image + noise
+#         latents = noise if is_strength_max else model.scheduler.add_noise(image_latents, noise, timestep)
+#         # if pure noise then scale the initial latents by the  Scheduler's init sigma
+#         latents = latents * model.scheduler.init_noise_sigma if is_strength_max else latents
+#     elif add_noise:
+#         noise = latents.to(device)
+#         latents = noise * model.scheduler.init_noise_sigma
+#     else:
+#         noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+#         latents = image_latents.to(device)
 
-    outputs = (latents,)
+#     outputs = (latents,)
 
-    if return_noise:
-        outputs += (noise,)
+#     if return_noise:
+#         outputs += (noise,)
 
-    if return_image_latents:
-        outputs += (image_latents,)
+#     if return_image_latents:
+#         outputs += (image_latents,)
 
-    return outputs
+#     return outputs
 
 
 
@@ -646,8 +665,18 @@ def main(args):
 
     model = ModelContainer(args,accelerator)
     
-    # log_validation(model.unet, model, args, accelerator, torch.float16, "old_model", test_dataloader)
+    unet_temp = UNet2DConditionModel_tryon.from_pretrained(
+        args.pretrained_model_name_or_path,
+        subfolder="unet",
+        torch_dtype=torch.float16,
+    )
+    
+    log_validation(unet_temp, model, args, accelerator, torch.float16, "old_model", test_dataloader)
 
+    del unet_temp
+    gc.collect()
+    torch.cuda.empty_cache()
+    
     unet = UNet2DConditionModel_tryon.from_pretrained(
         args.pretrained_nonfreeze_model_name_or_path, 
         # subfolder="unet", 
@@ -857,13 +886,7 @@ def main(args):
     # from memory. We will pre-compute the VAE encodings too.
     text_encoders = [model.text_encoder_one, model.text_encoder_two]
     tokenizers = [model.tokenizer_one, model.tokenizer_two]
-    compute_embeddings_fn = functools.partial(
-        encode_prompt,
-        text_encoders=text_encoders,
-        tokenizers=tokenizers,
-        proportion_empty_prompts=args.proportion_empty_prompts,
-        caption_column=args.caption_column,
-    )
+    
     # del compute_vae_encodings_fn, compute_embeddings_fn, text_encoder_one, text_encoder_two
     # del text_encoders, tokenizers, vae
     gc.collect()
@@ -1046,9 +1069,9 @@ def main(args):
                     tokenizers=tokenizers,
                     proportion_empty_prompts=args.proportion_empty_prompts,
                 )
-                
+                init_image = (batch["image"] + 1.0) / 2.0
                 init_image = model.image_processor.preprocess(
-                    batch["image"], height=args.height, width=args.width, crops_coords=None, resize_mode="default"
+                    init_image, height=args.height, width=args.width, crops_coords=None, resize_mode="default"
                 )
                 mask = model.mask_processor.preprocess(
                     batch["inpaint_mask"], height=args.height, width=args.width, crops_coords=None, resize_mode="default"

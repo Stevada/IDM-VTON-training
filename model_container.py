@@ -4,7 +4,6 @@ from diffusers import AutoencoderKL, DDPMScheduler
 from diffusers.image_processor import VaeImageProcessor
 from transformers import AutoTokenizer, CLIPVisionModelWithProjection,CLIPTextModelWithProjection, CLIPTextModel, CLIPImageProcessor
 
-from src.unet_hacked_tryon import UNet2DConditionModel
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
 
 class ModelContainer:
@@ -13,7 +12,6 @@ class ModelContainer:
         self.vae = AutoencoderKL.from_pretrained(
             args.pretrained_model_name_or_path,
             subfolder="vae",
-            torch_dtype=torch.float16,
         )
         # self.unet = UNet2DConditionModel.from_pretrained(
         #     args.pretrained_model_name_or_path,

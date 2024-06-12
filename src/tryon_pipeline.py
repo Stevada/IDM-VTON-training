@@ -1219,6 +1219,42 @@ class StableDiffusionXLInpaintPipeline(
             emb = torch.nn.functional.pad(emb, (0, 1))
         assert emb.shape == (w.shape[0], embedding_dim)
         return emb
+    
+    def reconstruct_vae_img(self, latent_img, output_type, do_classifier_free_guidance = None):
+        """
+        Reconstructs the original pose image from the latent representation and reverses the concatenation operation if needed.
+
+        Args:
+            latent_img (torch.Tensor): The latent representation of the pose image.
+            vae (VAE): The VAE model used for encoding and decoding.
+            device (torch.device): The device to perform computations on.
+            dtype (torch.dtype): The data type of the original embeddings.
+            scaling_factor (float): The scaling factor used during encoding.
+            do_classifier_free_guidance (bool): Flag indicating whether classifier-free guidance was used.
+
+        Returns:
+            torch.Tensor: The reconstructed original pose image.
+        """
+        if do_classifier_free_guidance is None:
+            do_classifier_free_guidance = self.do_classifier_free_guidance
+        
+        # Reverse the scaling factor
+        latent_img = latent_img / self.vae.config.scaling_factor
+        
+        # Reverse the concatenation if classifier-free guidance was used
+        if do_classifier_free_guidance:
+            original_shape = latent_img.shape[0] // 2, *latent_img.shape[1:]
+            latent_img = latent_img.view(2, *original_shape).select(0, 0)
+            # or using slicing
+            # latent_img = latent_img[:original_shape[0]]
+
+        # Decode the latent representation back to image space
+        reconstructed_pose_img = self.vae.decode(latent_img, return_dict=False)[0]
+
+        reconstructed_pose_img = self.image_processor.postprocess(reconstructed_pose_img, output_type=output_type)
+        
+        return reconstructed_pose_img
+
 
     @property
     def guidance_scale(self):
@@ -1288,6 +1324,7 @@ class StableDiffusionXLInpaintPipeline(
         pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         ip_adapter_image: Optional[PipelineImageInput] = None,
+        inference_sampling_step: Optional[int] = None,
         output_type: Optional[str] = "pil",
         cloth =None,
         pose_img = None,
@@ -1633,11 +1670,20 @@ class StableDiffusionXLInpaintPipeline(
             return_noise=True,
             return_image_latents=return_image_latents,
         )
+        before_inference_images = []
 
         if return_image_latents:
             latents, noise, image_latents = latents_outputs
+            if inference_sampling_step is not None:
+                noise_image = self.reconstruct_vae_img(noise, output_type, False)
+                before_inference_images.append(noise_image)
+                image_latents_image = self.reconstruct_vae_img(image_latents, output_type, False)
+                before_inference_images.append(image_latents_image)
         else:
             latents, noise = latents_outputs
+            if inference_sampling_step is not None:
+                noise_image = self.reconstruct_vae_img(noise, output_type, False)
+                before_inference_images.append(noise_image)
 
         # 7. Prepare mask latent variables
         mask, masked_image_latents = self.prepare_mask_latents(
@@ -1772,6 +1818,7 @@ class StableDiffusionXLInpaintPipeline(
 
 
         self._num_timesteps = len(timesteps)
+        inference_sampling_images = []
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -1787,7 +1834,20 @@ class StableDiffusionXLInpaintPipeline(
                 # bsz = mask.shape[0]
                 if num_channels_unet == 13:
                     # print(f"{latent_model_input.shape}, {mask.shape}, {masked_image_latents.shape}, {pose_img.shape} ")
-                    latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents,pose_img], dim=1)
+                    latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents, pose_img], dim=1)
+                    if(inference_sampling_step is not None and i == 0):
+                        # latent_model_input_image = self.vae.decode(latent_model_input / self.vae.config.scaling_factor, return_dict=False)[0]
+                        # latent_model_input_image = self.image_processor.postprocess(latent_model_input_image, output_type=output_type)
+                        # masked_image_latents_image = self.vae.decode(masked_image_latents / self.vae.config.scaling_factor, return_dict=False)[0]
+                        # masked_image_latents_image = self.image_processor.postprocess(masked_image_latents_image, output_type=output_type)
+                        # pose_lantents_img = self.vae.decode(pose_img / self.vae.config.scaling_factor, return_dict=False)[0]
+                        # pose_lantents_img = self.image_processor.postprocess(pose_lantents_img, output_type=output_type)
+                        # before_inference_images = [latent_model_input_image, masked_image_latents_image, pose_lantents_img]
+                        masked_image_latents_image = self.reconstruct_vae_img(masked_image_latents, output_type)
+                        before_inference_images.append(masked_image_latents_image)
+                        pose_lantents_img = self.reconstruct_vae_img(pose_img, output_type)
+                        before_inference_images.append(pose_lantents_img)
+                        # before_inference_images = [masked_image_latents_image, pose_lantents_img]
                     # import os
                     # os._exit(os.EX_OK)
 
@@ -1854,6 +1914,12 @@ class StableDiffusionXLInpaintPipeline(
 
                     latents = (1 - init_mask) * init_latents_proper + init_mask * latents
 
+                if inference_sampling_step is not None:
+                    if i % inference_sampling_step == 0:
+                        internal_image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
+                        internal_image = self.image_processor.postprocess(internal_image, output_type=output_type)
+                        inference_sampling_images.append(internal_image)
+                        
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
                     for k in callback_on_step_end_tensor_inputs:
@@ -1908,6 +1974,6 @@ class StableDiffusionXLInpaintPipeline(
         self.maybe_free_model_hooks()
 
         # if not return_dict:
-        return (image,)
+        return (image, inference_sampling_images, before_inference_images)
 
         # return StableDiffusionXLPipelineOutput(images=image)
