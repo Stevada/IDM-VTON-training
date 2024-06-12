@@ -4,6 +4,3 @@ bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
 rm -rf ~/miniconda3/miniconda.sh
 
 ~/miniconda3/bin/conda init bash
-
-git config --global user.email "anzhanghust@gmail.com"
-git config --global user.name "nftblackmagic"
