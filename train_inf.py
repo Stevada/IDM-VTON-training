@@ -247,14 +247,12 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                             negative_prompt=negative_prompt,
                         )
                     
-
-
-                    generator = torch.Generator(pipe.device).manual_seed(args.seed) if args.seed is not None else None
                     
-                    inference_guidance_scale = [0.99, 2, 5]
+                    inference_guidance_scale = [0.99, 1, 2, 0, 5]
                     output_images = []
 
                     for scale in inference_guidance_scale:
+                        generator = torch.Generator(pipe.device).manual_seed(args.seed) if args.seed is not None else None
                         (images, inference_sampling_images, before_inference_images) = pipe(
                             prompt_embeds=prompt_embeds,
                             negative_prompt_embeds=negative_prompt_embeds,
@@ -262,7 +260,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
                             num_inference_steps=args.inference_steps,
                             generator=generator,
-                            strength=1.0,
+                            strength=0.99,
                             pose_img=sample['pose_img'],
                             text_embeds_cloth=prompt_embeds_c,
                             cloth=sample["cloth_pure"].to(accelerator.device),
@@ -494,28 +492,28 @@ def retrieve_latents(
     else:
         raise AttributeError("Could not access latents of provided encoder_output")
 
-def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator):
-    dtype = image.dtype
-    if self.vae.config.force_upcast:
-        image = image.float()
-        self.vae.to(dtype=torch.float32)
+# def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator):
+#     dtype = image.dtype
+#     if self.vae.config.force_upcast:
+#         image = image.float()
+#         self.vae.to(dtype=torch.float32)
 
-    if isinstance(generator, list):
-        image_latents = [
-            retrieve_latents(self.vae.encode(image[i : i + 1]), generator=generator[i])
-            for i in range(image.shape[0])
-        ]
-        image_latents = torch.cat(image_latents, dim=0)
-    else:
-        image_latents = retrieve_latents(self.vae.encode(image), generator=generator)
+#     if isinstance(generator, list):
+#         image_latents = [
+#             retrieve_latents(self.vae.encode(image[i : i + 1]), generator=generator[i])
+#             for i in range(image.shape[0])
+#         ]
+#         image_latents = torch.cat(image_latents, dim=0)
+#     else:
+#         image_latents = retrieve_latents(self.vae.encode(image), generator=generator)
 
-    if self.vae.config.force_upcast:
-        self.vae.to(dtype)
+#     if self.vae.config.force_upcast:
+#         self.vae.to(dtype)
 
-    image_latents = image_latents.to(dtype)
-    image_latents = self.vae.config.scaling_factor * image_latents
+#     image_latents = image_latents.to(dtype)
+#     image_latents = self.vae.config.scaling_factor * image_latents
 
-    return image_latents
+#     return image_latents
 
 
 
@@ -1098,7 +1096,18 @@ def main(args):
                 cloth_latents = compute_vae_encodings(cloth, model.vae)
                 # print(f"cloth_latents: {cloth_latents.shape}")
                 # os._exit(os.EX_OK)
-                
+                reconstruct_model_input = model.reconstruct_vae_img(model_input)
+                reconstruct_pose_image = model.reconstruct_vae_img(masked_image_latents)
+                reconstruct_cloth_image = model.reconstruct_vae_img(cloth_latents)
+                # print(f"reconstruct_model_input, {reconstruct_model_input}")
+                # print(f"reconstruct_pose_image, {reconstruct_pose_image}")
+                # print(f"reconstruct_cloth_image, {reconstruct_cloth_image}")
+
+                # formatted_images = []
+                # formatted_images.append(wandb.Image(reconstruct_model_input[0], caption="reconstruct_model_input"))
+                # formatted_images.append(wandb.Image(reconstruct_pose_image[0], caption="reconstruct_pose_image"))
+                # formatted_images.append(wandb.Image(reconstruct_cloth_image[0], caption="reconstruct_cloth_image"))
+                # accelerator.log({"trainning internal image input": formatted_images})
                 
                 noise = torch.randn_like(model_input)
                 if args.noise_offset:
@@ -1153,7 +1162,6 @@ def main(args):
                 
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
                 added_cond_kwargs.update({"image_embeds": image_embeds})
-
                 
                 # Predict the noise residual
                 down,reference_features = model.ref_unet(
@@ -1177,6 +1185,13 @@ def main(args):
                     return_dict=False,
                     garment_features=reference_features,
                 )[0]
+                
+                # # latents = model.noise_scheduler.step(model_pred, timesteps, latent_model_input, return_dict=False)[0]
+                # reconstruct_latent_image = model.reconstruct_vae_img(model_pred)
+                # # print(f"reconstruct_latent_image: {reconstruct_latent_image}")
+                # formatted_images = []
+                # formatted_images.append(wandb.Image(reconstruct_latent_image[0], caption="reconstruct_latent_image"))
+                # accelerator.log({"trainning internal image output": formatted_images})
                 
                 # os._exit(os.EX_OK)
 

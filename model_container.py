@@ -87,3 +87,30 @@ class ModelContainer:
         
         # Replace the original first conv layer with the new one
         return new_first_conv
+
+    def reconstruct_vae_img(self, latent_img, output_type="pil"):
+        """
+        Reconstructs the original pose image from the latent representation and reverses the concatenation operation if needed.
+
+        Args:
+            latent_img (torch.Tensor): The latent representation of the pose image.
+            vae (VAE): The VAE model used for encoding and decoding.
+            device (torch.device): The device to perform computations on.
+            dtype (torch.dtype): The data type of the original embeddings.
+            scaling_factor (float): The scaling factor used during encoding.
+            do_classifier_free_guidance (bool): Flag indicating whether classifier-free guidance was used.
+
+        Returns:
+            torch.Tensor: The reconstructed original pose image.
+        """
+        with torch.no_grad():
+        # Reverse the scaling factor
+            latent_img = latent_img / self.vae.config.scaling_factor
+            
+            # Decode the latent representation back to image space
+            reconstructed_pose_img = self.vae.decode(latent_img, return_dict=False)[0]
+
+            reconstructed_pose_img = self.image_processor.postprocess(reconstructed_pose_img, output_type=output_type)
+            
+            return reconstructed_pose_img
+
