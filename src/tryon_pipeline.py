@@ -252,7 +252,7 @@ def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
 ):
     if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
-        return encoder_output.latent_dist.sample(generator)
+        return encoder_output.latent_dist.sample()
     elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
         return encoder_output.latent_dist.mode()
     elif hasattr(encoder_output, "latents"):
@@ -895,8 +895,13 @@ class StableDiffusionXLInpaintPipeline(
             image_latents = self._encode_vae_image(image=image, generator=generator)
             image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
 
+        print(f"image {image.shape} is_strength_max: {is_strength_max}, latents: {latents}, add_noise: {add_noise}")
+        # import os
+        # os._exit(os.EX_OK)
+        
         if latents is None and add_noise:
-            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            noise = torch.randn_like(image_latents)
+            # noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             # if strength is 1. then initialise the latents to noise, else initial to image + noise
             latents = noise if is_strength_max else self.scheduler.add_noise(image_latents, noise, timestep)
             # if pure noise then scale the initial latents by the  Scheduler's init sigma
@@ -1919,6 +1924,8 @@ class StableDiffusionXLInpaintPipeline(
                         internal_image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False)[0]
                         internal_image = self.image_processor.postprocess(internal_image, output_type=output_type)
                         inference_sampling_images.append(internal_image)
+                        # noise_pred_image = self.reconstruct_vae_img(noise_pred,output_type, False)
+                        # inference_sampling_images.append(noise_pred_image)
                         
                 if callback_on_step_end is not None:
                     callback_kwargs = {}

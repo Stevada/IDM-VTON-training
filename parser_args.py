@@ -162,6 +162,11 @@ def parse_args(input_args=None):
         help="whether to randomly flip images horizontally",
     )
     parser.add_argument(
+        "--disable_ip_adapter",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=100)

@@ -32,6 +32,7 @@ accelerate launch train_inf.py \
   --enable_xformers_memory_efficient_attention  \
   --seed 42  \
   --inference_sampling_step 5 \
+  --disable_ip_adapter  \
   # --image_encoder_path="./checkpoints/image_encoder"  \
   # --enable_xformers_memory_efficient_attention \
   # --pretrained_vae_model_name_or_path=$VAE_NAME \
