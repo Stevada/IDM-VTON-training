@@ -252,6 +252,7 @@ def retrieve_latents(
     encoder_output: torch.Tensor, generator: Optional[torch.Generator] = None, sample_mode: str = "sample"
 ):
     if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+        # TODO: COLOR DIFF
         return encoder_output.latent_dist.sample()
     elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
         return encoder_output.latent_dist.mode()
@@ -900,6 +901,7 @@ class StableDiffusionXLInpaintPipeline(
         # os._exit(os.EX_OK)
         
         if latents is None and add_noise:
+            # TODO: COLOR DIFF
             noise = torch.randn_like(image_latents)
             # noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             # if strength is 1. then initialise the latents to noise, else initial to image + noise
