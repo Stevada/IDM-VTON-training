@@ -38,8 +38,8 @@ git clone https://github.com/nftblackmagic/IDM-VTON.git
 cd IDM-VTON
 
 conda env create -f environment.yaml
-**conda activate groot
-**```
+conda activate groot
+```
 
 ## Data preparation
 
