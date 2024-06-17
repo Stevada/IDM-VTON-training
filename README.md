@@ -1,3 +1,7 @@
+#This is the unofficial training implementation of the paper ["Improving Diffusion Models for Authentic Virtual Try-on in the Wild"](https://arxiv.org/abs/2403.05139).
+
+Star ⭐ us if you like it!
+
 
 <div align="center">
 <h1>IDM-VTON: Improving Diffusion Models for Authentic Virtual Try-on in the Wild</h1>
@@ -10,9 +14,6 @@
 
 </div>
 
-This is the unofficial training implementation of the paper ["Improving Diffusion Models for Authentic Virtual Try-on in the Wild"](https://arxiv.org/abs/2403.05139).
-
-Star ⭐ us if you like it!
 
 ---
 
