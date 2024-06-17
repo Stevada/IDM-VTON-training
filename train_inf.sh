@@ -22,7 +22,7 @@ accelerate launch train_inf.py \
   --output_dir="output" \
   --dataroot="/workspace/MagicClothing/data/VITON-HD"  \
   --train_data_list="subtrain_1.txt" \
-  --validation_data_list="subtrain_1.txt" \
+  --validation_data_list="subtest_1.txt" \
   --width 384  \
   --height 512  \
   --tracker_project_name="train_controlnet" \
@@ -33,6 +33,8 @@ accelerate launch train_inf.py \
   --seed 42  \
   --inference_sampling_step 5 \
   --disable_ip_adapter  \
+  # --timestep_bias_strategy="earlier"  \
+  # --timestep_bias_multiplier="1.8"  \
   # --image_encoder_path="./checkpoints/image_encoder"  \
   # --enable_xformers_memory_efficient_attention \
   # --pretrained_vae_model_name_or_path=$VAE_NAME \

@@ -253,7 +253,7 @@ def retrieve_latents(
 ):
     if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
         # TODO: COLOR DIFF
-        return encoder_output.latent_dist.sample()
+        return encoder_output.latent_dist.sample(generator)
     elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
         return encoder_output.latent_dist.mode()
     elif hasattr(encoder_output, "latents"):
@@ -902,8 +902,8 @@ class StableDiffusionXLInpaintPipeline(
         
         if latents is None and add_noise:
             # TODO: COLOR DIFF
-            noise = torch.randn_like(image_latents)
-            # noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            # noise = torch.randn_like(image_latents)
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
             # if strength is 1. then initialise the latents to noise, else initial to image + noise
             latents = noise if is_strength_max else self.scheduler.add_noise(image_latents, noise, timestep)
             # if pure noise then scale the initial latents by the  Scheduler's init sigma
@@ -1627,6 +1627,8 @@ class StableDiffusionXLInpaintPipeline(
             )
         # at which timestep to set the initial noise (n.b. 50% if strength is 0.5)
         latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
+        # print(f"timesteps of inferencing: {timesteps}, latent_timestep: {latent_timestep}")
+
         # create a boolean to check if the strength is set to 1. if so then initialise the latents with pure noise
         is_strength_max = strength == 1.0
 
