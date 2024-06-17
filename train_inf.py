@@ -248,7 +248,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                         )
                     
                     
-                    inference_guidance_scale = [0.99, 1, 2, 0, 5]
+                    inference_guidance_scale = [0.99, 2, 5]
                     output_images = []
 
                     for scale in inference_guidance_scale:
@@ -955,7 +955,7 @@ def main(args):
 
     # developing log
     # print(f"the in channel number: {unet.config.in_channels}")
-    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", train_dataloader)
+    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", validation_dataloader)
     
     # os._exit(os.EX_OK)
     
