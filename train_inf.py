@@ -64,7 +64,7 @@ from parser_args import parse_args
 from model_container import ModelContainer
 
 from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
-from utils import combine_images_horizontally, combine_images_vertically
+from utils import combine_images_horizontally, combine_images_vertically, is_in_range
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.28.0.dev0")
@@ -248,7 +248,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                         )
                     
                     
-                    inference_guidance_scale = [0.99, 1, 2, 0, 5]
+                    inference_guidance_scale = [0.99, 2, 5]
                     output_images = []
 
                     for scale in inference_guidance_scale:
@@ -260,7 +260,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
                             num_inference_steps=args.inference_steps,
                             generator=generator,
-                            strength=0.99,
+                            strength=0.8,
                             pose_img=sample['pose_img'],
                             text_embeds_cloth=prompt_embeds_c,
                             cloth=sample["cloth_pure"].to(accelerator.device),
@@ -649,7 +649,7 @@ def main(args):
 
     test_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
-        phase="train",
+        phase="test",
         order="paired",
         size=(args.height, args.width),
         data_list=args.validation_data_list,
@@ -864,7 +864,7 @@ def main(args):
     # train_dataset = CPDataset(args.dataroot, args.resolution, mode="train", data_list=args.train_data_list)
     validation_dataset = VitonHDTestDataset(
         dataroot_path=args.dataroot,
-        phase="train",
+        phase="test",
         order="paired",
         size=(args.height, args.width),
         data_list=args.validation_data_list,
@@ -955,7 +955,7 @@ def main(args):
 
     # developing log
     # print(f"the in channel number: {unet.config.in_channels}")
-    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", train_dataloader)
+    log_validation(unet, model, args, accelerator, weight_dtype, "pre_train", validation_dataloader)
     
     # os._exit(os.EX_OK)
     
@@ -1067,6 +1067,8 @@ def main(args):
                     tokenizers=tokenizers,
                     proportion_empty_prompts=args.proportion_empty_prompts,
                 )
+                # is_0_1 = is_in_range(batch["image"], 0 , 1)
+                # print(f"is_0_1: {is_0_1}")
                 init_image = (batch["image"] + 1.0) / 2.0
                 init_image = model.image_processor.preprocess(
                     init_image, height=args.height, width=args.width, crops_coords=None, resize_mode="default"
@@ -1130,6 +1132,7 @@ def main(args):
                     )
                     timesteps = torch.multinomial(weights, bsz, replacement=True).long()
 
+                # print(f"timesteps of training: {timesteps}")
                 # Add noise to the model input according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 # Sample noise that we'll add to the latents

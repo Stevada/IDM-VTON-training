@@ -1,4 +1,5 @@
 from PIL import Image
+import torch
 
 def combine_images_horizontally(images):
     """
@@ -43,3 +44,6 @@ def combine_images_vertically(images):
         y_offset += image.height
 
     return combined_image
+
+def is_in_range(tensor, min_value, max_value):
+    return torch.min(tensor) >= min_value and torch.max(tensor) <= max_value
