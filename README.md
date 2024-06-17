@@ -38,8 +38,8 @@ git clone https://github.com/nftblackmagic/IDM-VTON.git
 cd IDM-VTON
 
 conda env create -f environment.yaml
-conda activate groot
-```
+**conda activate groot
+**```
 
 ## Data preparation
 
@@ -50,6 +50,8 @@ After download VITON-HD dataset, move vitonhd_test_tagged.json into the test fol
 
 Structure of the Dataset directory should be as follows.
 
+**Download cloth captions from train [Google Driver](https://drive.google.com/file/d/1WfQUh1O3uuoASCvRm-O2vMp4JBHVWj9Z/view?usp=drive_link) test [Google Driver](https://drive.google.com/file/d/1OM2zBFFRZUOigzrNG-WHHdeer9MuGaqz/view?usp=drive_link)
+**
 ```
 
 train
@@ -60,8 +62,8 @@ test
 |-- image-densepose
 |-- agnostic-mask
 |-- cloth
-|-- cloth-caption
-
+**|-- cloth-caption
+**
 ```
 
 ### DressCode
@@ -92,8 +94,8 @@ DressCode
     |-- ...
 ```
 
-## Trainning
-
+**## Trainning
+**
 Currently only support VITON-HD trainning
 ### VITON-HD preparation
 
