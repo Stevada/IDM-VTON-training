@@ -33,11 +33,11 @@ Star ⭐ us if you like it!
 ## Requirements
 
 ```
-git clone https://github.com/yisol/IDM-VTON.git
+git clone https://github.com/nftblackmagic/IDM-VTON.git
 cd IDM-VTON
 
 conda env create -f environment.yaml
-conda activate idm
+conda activate groot
 ```
 
 ## Data preparation
@@ -59,7 +59,7 @@ test
 |-- image-densepose
 |-- agnostic-mask
 |-- cloth
-|-- vitonhd_test_tagged.json
+|-- cloth-caption
 
 ```
 
@@ -91,6 +91,25 @@ DressCode
     |-- ...
 ```
 
+## Trainning
+
+Currently only support VITON-HD trainning
+### VITON-HD preparation
+
+First, prepare required data/weight before starting training:
+1. IDM-VTON weights (./checkpoints/IDM). The unet of IDM will be replaced by new SDXL weights
+2. sdxl-inpaint-ema (./checkpoints/sdxl-inpaint-ema). The initilized unet weight. From https://huggingface.co/valhalla/sdxl-inpaint-ema
+3. dataset pair txt. subtrain_20.txt is 20% of train_pairs.txt. I created it manually, you can directly use train_pairs.txt as training dataset. The following is my subtest_1.txt, you can change your own validation list.
+
+```
+09569_00.jpg 06570_00.jpg
+01936_00.jpg 09263_00.jpg
+```
+
+### Start training
+```
+bash train_inf.sh
+```
 
 ## Inference
 

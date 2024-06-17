@@ -20,19 +20,19 @@ accelerate launch train_inf.py \
   --report_to="wandb" \
   --checkpointing_steps 500 \
   --output_dir="output" \
-  --dataroot="/workspace/MagicClothing/data/VITON-HD"  \
+  --dataroot="./data/VITON-HD"  \
   --train_data_list="subtrain_20.txt" \
   --validation_data_list="subtest_1.txt" \
   --width 384  \
   --height 512  \
-  --tracker_project_name="train_controlnet" \
-  --tracker_entity="anzhangusc" \
   --pretrained_nonfreeze_model_name_or_path="./checkpoints/sdxl-inpaint-ema"  \
   --validation_steps 200  \
   --enable_xformers_memory_efficient_attention  \
   --seed 42  \
   --inference_sampling_step 5  \
   --disable_ip_adapter  \
+  # --tracker_project_name="train_controlnet" \
+  # --tracker_entity="anzhangusc" \
   # --timestep_bias_strategy="earlier"  \
   # --timestep_bias_multiplier="1.8"  \
   # --image_encoder_path="./checkpoints/image_encoder"  \
