@@ -10,7 +10,7 @@
 
 </div>
 
-This is the official implementation of the paper ["Improving Diffusion Models for Authentic Virtual Try-on in the Wild"](https://arxiv.org/abs/2403.05139).
+This is the unofficial training implementation of the paper ["Improving Diffusion Models for Authentic Virtual Try-on in the Wild"](https://arxiv.org/abs/2403.05139).
 
 Star ⭐ us if you like it!
 
@@ -26,7 +26,7 @@ Star ⭐ us if you like it!
 
 - [x] demo model
 - [x] inference code
-- [ ] training code
+- [x] training code
 
 
 
