@@ -896,7 +896,7 @@ class StableDiffusionXLInpaintPipeline(
             image_latents = self._encode_vae_image(image=image, generator=generator)
             image_latents = image_latents.repeat(batch_size // image_latents.shape[0], 1, 1, 1)
 
-        print(f"image {image.shape} is_strength_max: {is_strength_max}, latents: {latents}, add_noise: {add_noise}")
+        # print(f"image {image.shape} is_strength_max: {is_strength_max}, latents: {latents}, add_noise: {add_noise}")
         # import os
         # os._exit(os.EX_OK)
         
