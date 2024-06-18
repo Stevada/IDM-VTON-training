@@ -250,6 +250,11 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                     
                     inference_guidance_scale = [0.99, 2, 5]
                     output_images = []
+                    
+                    target_size = sample['image'].shape[2:]
+                    sample['pose_img'] = F.interpolate(sample['pose_img'], size=target_size, mode='bilinear', align_corners=False)
+                    sample['cloth_pure'] = F.interpolate(sample['cloth_pure'], size=target_size, mode='bilinear', align_corners=False)
+
 
                     for scale in inference_guidance_scale:
                         generator = torch.Generator(pipe.device).manual_seed(args.seed) if args.seed is not None else None
@@ -263,7 +268,7 @@ def log_validation(unet, model, args, accelerator, weight_dtype, log_name, valid
                             strength=0.8,
                             pose_img=sample['pose_img'],
                             text_embeds_cloth=prompt_embeds_c,
-                            cloth=sample["cloth_pure"].to(accelerator.device),
+                            cloth=sample['cloth_pure'].to(accelerator.device),
                             mask_image=sample['inpaint_mask'],
                             image=(sample['image'] + 1.0) / 2.0,
                             height=args.height,
@@ -1020,6 +1025,11 @@ def main(args):
                     img_emb_list.append(batch['cloth'][i])
                 
                 prompt = batch["caption"]
+                
+                target_size = batch['image'].shape[2:]
+                batch['pose_img'] = F.interpolate(batch['pose_img'], size=target_size, mode='bilinear', align_corners=False)
+                batch['cloth_pure'] = F.interpolate(batch['cloth_pure'], size=target_size, mode='bilinear', align_corners=False)
+
                 pose_img = batch["pose_img"]
                 cloth = batch["cloth_pure"]
 
