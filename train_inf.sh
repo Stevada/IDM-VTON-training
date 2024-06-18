@@ -18,7 +18,7 @@ accelerate launch train_inf.py \
   --learning_rate=1e-05 --lr_scheduler="constant" --lr_warmup_steps=0 \
   --mixed_precision="fp16" \
   --report_to="wandb" \
-  --checkpointing_steps 500 \
+  --checkpointing_steps 1000 \
   --output_dir="output" \
   --dataroot="./data/VITON-HD"  \
   --train_data_list="subtrain_20.txt" \
@@ -29,10 +29,10 @@ accelerate launch train_inf.py \
   --validation_steps 200  \
   --enable_xformers_memory_efficient_attention  \
   --seed 42  \
-  --inference_sampling_step 5  \
-  --disable_ip_adapter  \
+  # --disable_ip_adapter  \
   # --tracker_project_name="train_controlnet" \
   # --tracker_entity="anzhangusc" \
+  # --inference_sampling_step 5  \
   # --timestep_bias_strategy="earlier"  \
   # --timestep_bias_multiplier="1.8"  \
   # --image_encoder_path="./checkpoints/image_encoder"  \
