@@ -1,5 +1,9 @@
 # This is the unofficial training implementation of the paper ["Improving Diffusion Models for Authentic Virtual Try-on in the Wild"](https://arxiv.org/abs/2403.05139).
 
+Our results:[wandb](https://wandb.ai/anzhangusc/train_controlnet/runs/v34c4bin)
+
+Our model: [huggingface](https://huggingface.co/xiaozaa/IDM-VTON-unofficial)
+
 Star ⭐ us if you like it!
 
 
