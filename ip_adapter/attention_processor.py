@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from diffusers.models.lora import LoRACompatibleLinear
 from diffusers.models.lora import LoRALinearLayer,LoRAConv2dLayer
-from einops import rearrange
 
 from diffusers.models.transformers.transformer_2d import Transformer2DModel
 

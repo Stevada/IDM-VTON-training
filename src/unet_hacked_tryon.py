@@ -30,7 +30,6 @@ from diffusers.models.attention_processor import (
     AttnAddedKVProcessor,
     AttnProcessor,
 )
-from einops import rearrange
 
 from diffusers.models.embeddings import (
     GaussianFourierProjection,

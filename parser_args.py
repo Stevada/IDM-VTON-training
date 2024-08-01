@@ -14,7 +14,6 @@ def parse_args(input_args=None):
         "--pretrained_nonfreeze_model_name_or_path",
         type=str,
         default=None,
-        required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
@@ -93,7 +92,24 @@ def parse_args(input_args=None):
         "--validation_prompt",
         type=str,
         default=None,
-        help="A prompt that is used during validation to verify that the model is learning.",
+        nargs="+",
+        help=(
+            "A set of prompts evaluated every `--validation_steps` and logged to `--report_to`."
+            " Provide either a matching number of `--validation_image`s, a single `--validation_image`"
+            " to be used with all prompts, or a single prompt that will be used with all `--validation_image`s."
+        ),
+    )
+    parser.add_argument(
+        "--crops_coords_top_left_h",
+        type=int,
+        default=0,
+        help=("Coordinate for (the height) to be included in the crop coordinate embeddings needed by SDXL UNet."),
+    )
+    parser.add_argument(
+        "--crops_coords_top_left_w",
+        type=int,
+        default=0,
+        help=("Coordinate for (the height) to be included in the crop coordinate embeddings needed by SDXL UNet."),
     )
     parser.add_argument(
         "--num_validation_images",
@@ -413,6 +429,33 @@ def parse_args(input_args=None):
         type=str,
         default="catchonlabs",
     )
+    parser.add_argument(
+        "--validation_image",
+        type=str,
+        default=None,
+        nargs="+",
+        help=(
+            "A set of paths to the controlnet conditioning image be evaluated every `--validation_steps`"
+            " and logged to `--report_to`. Provide either a matching number of `--validation_prompt`s, a"
+            " a single `--validation_prompt` to be used with all `--validation_image`s, or a single"
+            " `--validation_image` that will be used with all `--validation_prompt`s."
+        ),
+    )
+    parser.add_argument(
+        "--controlnet_model_name_or_path",
+        type=str,
+        default=None,
+        help="Path to pretrained controlnet model or model identifier from huggingface.co/models."
+        " If not specified controlnet weights are initialized from unet.",
+    )
+    parser.add_argument(
+        "--lr_num_cycles",
+        type=int,
+        default=1,
+        help="Number of hard resets of the lr in cosine_with_restarts scheduler.",
+    )
+    parser.add_argument("--lr_power", type=float, default=1.0, help="Power factor of the polynomial scheduler.")
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -429,5 +472,23 @@ def parse_args(input_args=None):
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
         raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
 
+    if args.validation_prompt is not None and args.validation_image is None:
+        raise ValueError("`--validation_image` must be set if `--validation_prompt` is set")
+
+    if args.validation_prompt is None and args.validation_image is not None:
+        raise ValueError("`--validation_prompt` must be set if `--validation_image` is set")
+
+    if (
+        args.validation_image is not None
+        and args.validation_prompt is not None
+        and len(args.validation_image) != 1
+        and len(args.validation_prompt) != 1
+        and len(args.validation_image) != len(args.validation_prompt)
+    ):
+        raise ValueError(
+            "Must provide either 1 `--validation_image`, 1 `--validation_prompt`,"
+            " or the same number of `--validation_prompt`s and `--validation_image`s"
+        )
+    
     return args
 
