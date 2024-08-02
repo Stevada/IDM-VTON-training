@@ -363,42 +363,6 @@ def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prom
     return prompt_embeds, pooled_prompt_embeds
 
 
-def prepare_train_dataset(dataset, accelerator):
-    image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5]),
-        ]
-    )
-
-    conditioning_image_transforms = transforms.Compose(
-        [
-            transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.CenterCrop(args.resolution),
-            transforms.ToTensor(),
-        ]
-    )
-
-    def preprocess_train(examples):
-        images = [image.convert("RGB") for image in examples[args.image_column]]
-        images = [image_transforms(image) for image in images]
-
-        conditioning_images = [image.convert("RGB") for image in examples[args.conditioning_image_column]]
-        conditioning_images = [conditioning_image_transforms(image) for image in conditioning_images]
-
-        examples["pixel_values"] = images
-        examples["conditioning_pixel_values"] = conditioning_images
-
-        return examples
-
-    with accelerator.main_process_first():
-        dataset = dataset.with_transform(preprocess_train)
-
-    return dataset
-
-
 def collate_fn(examples):
     pixel_values = torch.stack([example["image"] for example in examples])
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
@@ -679,7 +643,8 @@ def main(args):
         add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
         unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
 
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
+        return prompt_embeds, add_text_embeds, add_time_ids
+        # return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
 
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory.
@@ -693,44 +658,43 @@ def main(args):
         data_list=args.train_data_list,
     )
     
-    compute_embeddings_fn = functools.partial(
-        compute_embeddings,
-        text_encoders=text_encoders,
-        tokenizers=tokenizers,
-        proportion_empty_prompts=args.proportion_empty_prompts,
-    )
+    # compute_embeddings_fn = functools.partial(
+    #     compute_embeddings,
+    #     text_encoders=text_encoders,
+    #     tokenizers=tokenizers,
+    #     proportion_empty_prompts=args.proportion_empty_prompts,
+    # )
 
-    with accelerator.main_process_first():
-        from datasets.fingerprint import Hasher
+    # with accelerator.main_process_first():
+    #     from datasets.fingerprint import Hasher
 
-        # fingerprint used by the cache for the other processes to load the result
-        # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
-        new_fingerprint = Hasher.hash(args)
-        # = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
+    #     # fingerprint used by the cache for the other processes to load the result
+    #     # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
+    #     new_fingerprint = Hasher.hash(args)
+    #     # = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
         
-        # Apply the compute_embeddings_fn to each batch in the dataset manually
-        data_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=False)
+    #     # Apply the compute_embeddings_fn to each batch in the dataset manually
+    #     data_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=False)
 
-        processed_data = []
-        for batch in data_loader:
-            embeddings = compute_embeddings_fn(batch)
-            processed_data.append(embeddings)
+    #     processed_data = []
+    #     for batch in data_loader:
+    #         embeddings = compute_embeddings_fn(batch)
+    #         processed_data.append(embeddings)
 
-        # Assuming you want to replace the dataset with processed data
-        # You'll need to define how to use the processed data within your pipeline
-        train_dataset = processed_data  # This is just a placeholder
+    #     # Assuming you want to replace the dataset with processed data
+    #     # You'll need to define how to use the processed data within your pipeline
+    #     train_dataset = processed_data  # This is just a placeholder
 
         
-    del text_encoders, tokenizers
-    gc.collect()
-    torch.cuda.empty_cache()
+    # del text_encoders, tokenizers
+    # gc.collect()
+    # torch.cuda.empty_cache()
 
     # Then get the training dataset ready to be passed to the dataloader.
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
-        collate_fn=collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
@@ -839,10 +803,13 @@ def main(args):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet):
                 # Convert images to latent space
+                
+                prompt_embeds, add_text_embeds, add_time_ids = compute_embeddings(batch, args.proportion_empty_prompts, text_encoders, tokenizers)
+                
                 if args.pretrained_vae_model_name_or_path is not None:
-                    pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                    pixel_values = batch["image"].to(dtype=weight_dtype)
                 else:
-                    pixel_values = batch["pixel_values"]
+                    pixel_values = batch["image"]
                 latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
                 if args.pretrained_vae_model_name_or_path is None:
@@ -861,12 +828,12 @@ def main(args):
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # ControlNet conditioning.
-                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                controlnet_image = batch["cloth_pure"].to(dtype=weight_dtype)
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_ids"],
-                    added_cond_kwargs=batch["unet_added_conditions"],
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs= {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                 )
@@ -875,8 +842,8 @@ def main(args):
                 model_pred = unet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_ids"],
-                    added_cond_kwargs=batch["unet_added_conditions"],
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs= {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
                     down_block_additional_residuals=[
                         sample.to(dtype=weight_dtype) for sample in down_block_res_samples
                     ],
