@@ -62,6 +62,7 @@ def parse_args():
     parser.add_argument("--guidance_scale",type=float,default=2.0,)
     parser.add_argument("--mixed_precision",type=str,default=None,choices=["no", "fp16", "bf16"],)
     parser.add_argument("--enable_xformers_memory_efficient_attention", action="store_true", help="Whether or not to use xformers.")
+    parser.add_argument("--data_list", type=str, default="subtest_0.1.txt")
     args = parser.parse_args()
 
 
@@ -306,6 +307,7 @@ def main():
         phase="test",
         order="unpaired" if args.unpaired else "paired",
         size=(args.height, args.width),
+        data_list=args.data_list,
     )
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset,

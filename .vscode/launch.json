@@ -1,0 +1,27 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: inference.py with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "inference.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--pretrained_model_name_or_path", "yisol/IDM-VTON",
+                "--width", "768", 
+                "--height", "1024", 
+                "--num_inference_steps", "30",
+                "--output_dir", "result",
+                "--data_dir", "/home/stevexu/data/VITON-HD",
+                "--seed", "42",
+                "--test_batch_size", "1",
+                "--guidance_scale", "2.0",
+            ]
+        }
+    ]
+}

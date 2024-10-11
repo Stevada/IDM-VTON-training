@@ -31,3 +31,6 @@ data/
 test_pairs_for_eval.txt
 
 OOTDiffusion/
+
+# generated imgs
+outputs/
