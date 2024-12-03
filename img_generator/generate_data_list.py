@@ -12,9 +12,8 @@ model_files = os.listdir(os.path.join(data_dir, model_folder))
 # Create a list to store the paired data
 paired_data = []
 
-# Generate Cartesian product of selected models and clothes
+# Randomly pair model and cloth and ensure they are different
 for model_file in model_files:
-    # Ensure the cloth file is different from the model file
     cloth_file = model_file 
     while cloth_file == model_file:
         cloth_file = random.choice(cloth_files)
