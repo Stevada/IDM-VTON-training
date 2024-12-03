@@ -11,36 +11,36 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
+import json
+import sys 
+import os
+root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(root_dir)
+print(root_dir)
+
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
-from ip_adapter.ip_adapter import Resampler
 
 import argparse
-import logging
-import os
-import torch.utils.data as data
+import shutil
+from collections import defaultdict
 import torchvision
-import json
-import accelerate
 import numpy as np
 import torch
-from PIL import Image
-import torch.nn.functional as F
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from packaging import version
-from torchvision import transforms
 import diffusers
-from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLControlNetInpaintPipeline
-from transformers import AutoTokenizer, PretrainedConfig,CLIPImageProcessor, CLIPVisionModelWithProjection,CLIPTextModelWithProjection, CLIPTextModel, CLIPTokenizer
+from diffusers import AutoencoderKL, DDPMScheduler
+from transformers import AutoTokenizer,CLIPImageProcessor, CLIPVisionModelWithProjection,CLIPTextModelWithProjection, CLIPTextModel, CLIPTokenizer
 
 from diffusers.utils.import_utils import is_xformers_available
 
 from src.unet_hacked_tryon import UNet2DConditionModel
 from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
 from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
-from cp_dataset import CPDatasetV2 as CPDataset, VitonHDTestDataset
+from cp_dataset import VitonHDTestDataset
 
 
 
@@ -94,7 +94,9 @@ def main():
     # Handle the repository creation
     if accelerator.is_main_process:
         if args.output_dir is not None:
-            os.makedirs(args.output_dir, exist_ok=True)
+            if os.path.exists(args.output_dir):
+                shutil.rmtree(args.output_dir)
+            os.makedirs(args.output_dir)
 
     weight_dtype = torch.float16
     # if accelerator.mixed_precision == "fp16":
@@ -210,7 +212,8 @@ def main():
     # pipe.enable_vae_slicing()
 
 
-
+    img_name_counts = defaultdict(int)
+    data_list = []
     with torch.no_grad():
         # Extract the images
         with torch.cuda.amp.autocast():
@@ -284,11 +287,20 @@ def main():
                         ip_adapter_image = image_embeds,
                     )[0]
 
-
                 for i in range(len(images)):
                     x_sample = pil_to_tensor(images[i])
-                    torchvision.utils.save_image(x_sample,os.path.join(args.output_dir,sample['im_name'][i]))
-            
+                    img_name = sample['im_name'][i].split('.')[0]
+                    img_name_counts[img_name] += 1
+                    target_name = f"{img_name}_{img_name_counts[img_name]}.png"
+                    torchvision.utils.save_image(x_sample,os.path.join(args.output_dir, target_name))
+                    data_list.append({
+                        "img_name": f"{args.data_dir}/{args.phase}/image/{sample['im_name'][i]}",
+                        "cloth_name": f"{args.data_dir}/{args.phase}/cloth/{sample['c_name'][i]}",
+                        "target_name": f"{args.output_dir}/{target_name}",
+                        "prompt": sample["caption"][i],
+                    })
+            with open(f"{args.output_dir}/data_list.json", "w") as f:
+                json.dump(data_list, f)
 
 
 

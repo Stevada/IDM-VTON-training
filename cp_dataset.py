@@ -619,15 +619,16 @@ class VitonHDTestDataset(data.Dataset):
 
         with open(filename, "r") as f:
             for line in f.readlines():
-                if phase == "train":
+                # TODO: comment out for generating unpaired training data
+                # if phase == "train":
+                #     im_name, _ = line.strip().split()
+                #     c_name = im_name
+                # else:
+                if order == "paired":
                     im_name, _ = line.strip().split()
                     c_name = im_name
                 else:
-                    if order == "paired":
-                        im_name, _ = line.strip().split()
-                        c_name = im_name
-                    else:
-                        im_name, c_name = line.strip().split()
+                    im_name, c_name = line.strip().split()
 
                 im_names.append(im_name)
                 c_names.append(c_name)
@@ -637,6 +638,7 @@ class VitonHDTestDataset(data.Dataset):
         self.c_names = c_names
         self.dataroot_names = dataroot_names
         self.clip_processor = CLIPImageProcessor()
+        
     def __getitem__(self, index):
         c_name = self.c_names[index]
         im_name = self.im_names[index]
